@@ -1,0 +1,23 @@
+/* Conftech small custom styles (Tailwind does the heavy lifting) */
+
+/* Preserve line breaks in email drafts */
+.prose-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Subtle dark scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}

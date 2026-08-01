@@ -9,7 +9,7 @@ Commands:
   python app.py ghostwrite [--lead-id <uuid>]    run Ghostwriter (approved -> drafts)
   python app.py review                           human review of pending_review leads
   python app.py watch --interval 60              poll for approved leads -> ghostwrite
-  python app.py serve --port 8000                FastAPI + background tasks
+  python app.py serve --port 8000                FastAPI web UI + API (webapp.py)
 
 Status flow: raw -> researched -> pending_review -> approved -> drafted
                                           |-> rejected
@@ -94,82 +94,9 @@ def run_pipeline(target_product: str, limit: int = 10) -> dict[str, Any]:
     return {"prospected": len(leads), "status_counts": stats}
 
 
-# --- FastAPI background jobs ------------------------------------------------
-
-def build_api():
-    """FastAPI app with background jobs (run: `python app.py serve`)."""
-    from fastapi import BackgroundTasks, FastAPI
-    from pydantic import BaseModel
-
-    api = FastAPI(title="Conftech API", version="0.1.0")
-
-    class PipelineRequest(BaseModel):
-        target_product: str
-        limit: int = 10
-
-    class StatusUpdate(BaseModel):
-        status: str  # approved | rejected
-
-    def _run_pipeline_bg(target_product: str, limit: int) -> None:
-        try:
-            run_pipeline(target_product, limit)
-        except Exception as exc:
-            print(f"[api] pipeline job failed: {exc}")
-
-    @api.post("/api/pipeline")
-    def start_pipeline(req: PipelineRequest, bg: BackgroundTasks):
-        bg.add_task(_run_pipeline_bg, req.target_product, req.limit)
-        return {"job": "started", "target_product": req.target_product, "limit": req.limit}
-
-    @api.get("/api/leads")
-    def list_leads(status: str | None = None, limit: int = 50):
-        if status:
-            return db.get_leads_by_status(status, limit=limit)
-        rows = []
-        for s in db.ALL_STATUSES:
-            rows.extend(db.get_leads_by_status(s, limit=limit))
-        return rows
-
-    @api.get("/api/leads/{lead_id}")
-    def get_lead(lead_id: str):
-        lead = db.get_lead(lead_id)
-        if not lead:
-            from fastapi import HTTPException
-
-            raise HTTPException(404, "lead not found")
-        return lead
-
-    @api.post("/api/leads/{lead_id}/status")
-    def update_status(lead_id: str, body: StatusUpdate):
-        from fastapi import HTTPException
-
-        lead = db.get_lead(lead_id)
-        if not lead:
-            raise HTTPException(404, "lead not found")
-        if body.status not in (db.APPROVED, db.REJECTED):
-            raise HTTPException(400, "status must be 'approved' or 'rejected'")
-        db.set_status(lead_id, body.status)
-        return {"id": lead_id, "status": body.status}
-
-    @api.get("/api/drafts")
-    def drafts(limit: int = 50):
-        return db.list_drafts(limit=limit)
-
-    @api.post("/api/ghostwrite/{lead_id}")
-    def ghostwrite(lead_id: str):
-        from fastapi import HTTPException
-
-        from ghostwriter import ghostwrite_for_lead
-
-        lead = db.get_lead(lead_id)
-        if not lead:
-            raise HTTPException(404, "lead not found")
-        if lead.get("status") != db.APPROVED:
-            raise HTTPException(400, f"lead status is {lead.get('status')}; expected approved")
-        return ghostwrite_for_lead(lead)
-
-    return api
-
+# --- Web UI / API server -----------------------------------------------------
+# The FastAPI app (web UI + JSON API) lives in webapp.py; serve runs it.
+#   python app.py serve --port 8000
 
 # --- CLI --------------------------------------------------------------------
 
@@ -238,7 +165,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "serve":
             import uvicorn
 
-            uvicorn.run(build_api(), host="0.0.0.0", port=args.port)
+            import webapp
+
+            uvicorn.run(webapp.build_app(), host="0.0.0.0", port=args.port)
     except db.TableNotReadyError as exc:
         print(f"\n[conftech] {exc}\n")
         return 1

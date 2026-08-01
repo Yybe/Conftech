@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Drafts · Conftech{% endblock %}
+{% block content %}
+
+<div>
+  <h1 class="text-xl font-bold tracking-tight text-white">Outreach drafts</h1>
+  <p class="mt-1 text-sm text-slate-400">{{ drafts|length }} draft(s) ready to send</p>
+</div>
+
+{% if drafts %}
+<div class="mt-6 space-y-5">
+  {% for d in drafts %}
+  <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-4">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-sm font-semibold text-slate-100">{{ d.subject|default('(no subject)') }}</span>
+        </div>
+        <div class="mt-1 flex items-center gap-3 text-xs text-slate-500">
+          <span class="font-medium text-indigo-300">{{ d.company_name }}</span>
+          {% if d.website %}
+          <a href="{{ d.website }}" target="_blank" rel="noopener" class="hover:text-indigo-300">{{ d.website|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+          {% endif %}
+          <span>{{ d.created_at|fmt_dt }}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          onclick="copyDraft('{{ d.id }}', this)"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700/60"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          Copy
+        </button>
+        <a href="/leads/{{ d.lead_id }}" class="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700/60">Lead</a>
+        <form method="post" action="/drafts/{{ d.id }}/delete" onsubmit="return confirm('Delete this draft for {{ d.company_name }}?')">
+          <button type="submit" class="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            Delete
+          </button>
+        </form>
+      </div>
+    </div>
+    <div id="draft-body-{{ d.id }}" class="prose-pre border-t border-slate-800/60 bg-slate-950/40 px-5 py-4 text-sm leading-relaxed text-slate-300">{{ d.email_body }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="mt-6 rounded-xl border border-dashed border-slate-800 px-5 py-16 text-center">
+  <div class="text-sm font-medium text-slate-300">No drafts yet</div>
+  <p class="mt-1 text-sm text-slate-500">
+    Approve a lead from the <a href="/leads?status=pending_review" class="text-indigo-400 hover:text-indigo-300">leads page</a> and its email is drafted automatically.
+  </p>
+</div>
+{% endif %}
+
+<script>
+  function copyDraft(id, btn) {
+    const el = document.getElementById('draft-body-' + id);
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText).then(() => {
+      const original = btn.innerHTML;
+      btn.innerHTML = '<span class="text-emerald-300">Copied!</span>';
+      setTimeout(() => { btn.innerHTML = original; }, 1500);
+    });
+  }
+</script>
+
+{% endblock %}

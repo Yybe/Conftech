@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Leads · Conftech{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-end justify-between gap-4">
+  <div>
+    <h1 class="text-xl font-bold tracking-tight text-white">Leads</h1>
+    <p class="mt-1 text-sm text-slate-400">{{ leads|length }} lead(s) shown</p>
+  </div>
+  <form method="get" action="/leads" class="flex items-center gap-2">
+    {% if current_status %}
+    <input type="hidden" name="status" value="{{ current_status }}">
+    {% endif %}
+    <input
+      type="number"
+      name="min_score"
+      value="{{ min_score or '' }}"
+      placeholder="Min fit score"
+      min="0"
+      max="100"
+      class="w-36 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30"
+    >
+    <button type="submit" class="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-700/60">Filter</button>
+    {% if current_status or min_score %}
+    <a href="/leads" class="rounded-lg px-3 py-2 text-sm text-slate-400 hover:text-slate-200">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+{% if notice == 'started' %}
+<div class="mt-5 flex items-center gap-3 rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
+  Pipeline started — new leads will appear here shortly.
+</div>
+{% endif %}
+
+{# ---------- Status tabs ---------- #}
+<div class="mt-6 flex flex-wrap gap-2">
+  <a href="/leads" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if not current_status else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
+    All <span class="ml-1 text-xs opacity-70">{{ counts.values()|sum }}</span>
+  </a>
+  {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
+  <a href="/leads?status={{ s }}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if current_status == s else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
+    {{ s|status_label }} <span class="ml-1 text-xs opacity-70">{{ counts.get(s, 0) }}</span>
+  </a>
+  {% endfor %}
+</div>
+
+{# ---------- Leads table ---------- #}
+<div class="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+  {% if leads %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead>
+        <tr class="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-500">
+          <th class="px-4 py-3 font-semibold">Company</th>
+          <th class="px-4 py-3 font-semibold">Website</th>
+          <th class="px-4 py-3 font-semibold">Target</th>
+          <th class="px-4 py-3 font-semibold">Status</th>
+          <th class="px-4 py-3 font-semibold">Fit</th>
+          <th class="px-4 py-3 font-semibold">Found</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800/70">
+        {% for lead in leads %}
+        <tr class="transition hover:bg-slate-800/40">
+          <td class="px-4 py-3">
+            <a href="/leads/{{ lead.id }}" class="font-medium text-slate-100 hover:text-indigo-300">{{ lead.company_name }}</a>
+            {% if lead.contact_email %}
+            <div class="text-xs text-slate-500">{{ lead.contact_email }}</div>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if lead.website %}
+            <a href="{{ lead.website }}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-indigo-300">
+              {{ lead.website|replace('https://', '')|replace('http://', '')|truncate(30, True) }}
+            </a>
+            {% else %}<span class="text-xs text-slate-600">—</span>{% endif %}
+          </td>
+          <td class="px-4 py-3 text-xs text-slate-400">{{ lead.target_product|default('—') }}</td>
+          <td class="px-4 py-3">
+            <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+          </td>
+          <td class="px-4 py-3 font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</td>
+          <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="px-4 py-16 text-center">
+    <div class="text-sm font-medium text-slate-300">No leads here</div>
+    <p class="mt-1 text-sm text-slate-500">
+      {% if current_status or min_score %}
+      Try a different filter, or <a href="/leads" class="text-indigo-400 hover:text-indigo-300">clear filters</a>.
+      {% else %}
+      Run the pipeline from the dashboard to find your first prospects.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -234,6 +234,21 @@ def get_leads_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
     return list(res.data)
 
 
+def list_leads(
+    status: str | None = None,
+    min_score: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List leads with optional status / fit-score filters (for the web UI)."""
+    query = get_client().table("leads").select("*").order("created_at", desc=True)
+    if status:
+        query = query.eq("status", status)
+    if min_score is not None:
+        query = query.gte("fit_score", min_score)
+    res = query.limit(limit).execute()
+    return list(res.data)
+
+
 def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
     """Update arbitrary columns; silently ignores unknown keys."""
     allowed = {
@@ -277,6 +292,22 @@ def list_drafts(limit: int = 50) -> list[dict[str, Any]]:
         .execute()
     )
     return list(res.data)
+
+
+def get_draft_for_lead(lead_id: str) -> dict[str, Any] | None:
+    res = (
+        get_client()
+        .table("outreach_drafts")
+        .select("*")
+        .eq("lead_id", lead_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def delete_draft(draft_id: str) -> None:
+    get_client().table("outreach_drafts").delete().eq("id", draft_id).execute()
 
 
 def count_by_status() -> dict[str, int]:

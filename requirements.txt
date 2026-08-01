@@ -6,14 +6,13 @@ python-dotenv>=1.0.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
-# API server (background jobs)
+# API server + web UI (background jobs, Jinja2 templates)
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-multipart>=0.0.9
+jinja2>=3.1.0
 
-# --- Optional: full web crawling (uncomment to enable ScrapeGraphAI) ---
-# Requires Chromium/Playwright on first run:
-#   pip install scrapegraphai playwright
-#   playwright install chromium
-# scrapegraphai>=1.20.0
-# playwright>=1.44.0
+# --- Web crawling with ScrapeGraphAI (real browser rendering) ---
+# Requires Chromium on first run:  playwright install chromium
+scrapegraphai>=1.20.0
+playwright>=1.44.0

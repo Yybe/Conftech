@@ -35,12 +35,14 @@ raw → researched → pending_review → approved → drafted
 |---|---|
 | `database.py` | Supabase persistence (service-role client), schema bootstrap, CRUD |
 | `prospector.py` | TheirStack (tech-filtered company search) + Serper (email/LinkedIn enrichment) → `raw` |
-| `researcher.py` | ScrapeGraphAI web crawl (BeautifulSoup fallback) → `scraped_data` → `researched` |
+| `researcher.py` | 3-tier web crawl → `scraped_data` → `researched`: **1)** ScrapeGraphAI (real browser rendering) **2)** BS4 + Gemma analysis **3)** BS4 raw |
 | `scorer.py` | Gemma-4 via OpenRouter: `fit_score` (1–100) + reasoning → `pending_review` |
 | `ghostwriter.py` | Gemma-4 cold email for **approved** leads → `outreach_drafts` → `drafted` |
-| `app.py` | CLI + FastAPI server; human `review_leads()`; `watch` trigger loop |
+| `webapp.py` | FastAPI web UI (dashboard / leads / drafts) + JSON API; agents run in BackgroundTasks |
+| `app.py` | CLI + server; human `review_leads()`; `watch` trigger loop |
 | `llm.py` | Shared OpenRouter helper + robust JSON parsing |
 | `cache.py` | Disk JSON cache with TTL (TheirStack 14d, Serper 30d, pages 30d) |
+| `scrapegraphai_compat.py` | Patches `ChatOllama` back into langchain-community 0.4+ (removed there) |
 | `prompts/*.md` | All LLM prompts (never embedded in Python) |
 
 ## Setup
@@ -58,6 +60,18 @@ automatically if not installed):
 pip install scrapegraphai playwright
 playwright install chromium
 ```
+
+> **Environment note (Windows + Python 3.10):** scrapegraphai pulls in numpy 2.x.
+> Upgrade the older compiled stack it coexists with, or you'll hit
+> `numpy.dtype size changed` / `cannot import name 'ChatOllama'` errors:
+>
+> ```bash
+> pip install -U "scipy>=1.13" "scikit-learn>=1.4.2" pandas "langchain-community>=0.4"
+> ```
+>
+> `scrapegraphai_compat.py` re-exports `ChatOllama` from `langchain_ollama`
+> (removed from langchain-community 0.4+); it's applied automatically before any
+> scrapegraphai import.
 
 ## Usage
 
@@ -81,8 +95,27 @@ python app.py ghostwrite
 # Trigger: auto-draft whenever a lead is approved
 python app.py watch --interval 60
 
-# REST API with background jobs
+# Web UI + REST API (open http://localhost:8000)
 python app.py serve --port 8000
+```
+
+## Web UI
+
+`python app.py serve` launches a dark-mode dashboard (FastAPI + Jinja2 + Tailwind):
+
+| Page | URL | What you can do |
+|---|---|---|
+| Dashboard | `/` | Status counts, recent leads/drafts, **Run pipeline** form |
+| Leads | `/leads` | Filter by status / min fit score; open any lead |
+| Lead detail | `/leads/{id}` | Approve / reject; view research data + reasoning |
+| Drafts | `/drafts` | Preview emails, copy to clipboard, delete |
+
+Approving a lead on the detail page auto-generates the outreach email in the
+background (status `approved` → `drafted`).
+
+REST API (for scripts / integration):
+
+```bash
 curl -X POST localhost:8000/api/pipeline -H "Content-Type: application/json" \
      -d '{"target_product":"Automated Payroll Software","limit":5}'
 curl localhost:8000/api/leads?status=pending_review
@@ -114,9 +147,11 @@ Schema is created by `python app.py init-db`, which tries in order:
 - `google/gemma-2-9b-it:free` is deprecated (404). Default model is
   `google/gemma-4-26b-a4b-it:free`, overridable with `LLM_MODEL` in `.env`.
 
-## Roadmap (post-MVP)
+## Roadmap
 
-- Switch polling (`watch`) to Celery/RQ or FastAPI BackgroundTasks (already scaffolded in `serve`)
-- Email sending (Resend/SendGrid) + open/reply tracking
-- Deeper scoring signals (job postings, hiring intent, funding events)
-- RLS policies + anon-key client for a review UI
+- [x] Web review UI (dashboard, approve/reject, draft previews) — `python app.py serve`
+- [x] ScrapeGraphAI browser rendering for research (3-tier fallback)
+- [ ] Email sending (Resend/SendGrid) + open/reply tracking
+- [ ] Contact email enrichment (paid Serper tier or Hunter/Prospeo)
+- [ ] Deeper scoring signals (job postings, hiring intent, funding events)
+- [ ] RLS policies + anon-key client for a multi-user review UI

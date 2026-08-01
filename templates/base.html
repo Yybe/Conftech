@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Conftech{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="h-full bg-slate-950 font-sans text-slate-100 antialiased">
+  <div class="flex min-h-screen">
+    {# ---------- Sidebar ---------- #}
+    <aside class="flex w-64 shrink-0 flex-col border-r border-slate-800/80 bg-slate-900/40">
+      <div class="flex h-16 items-center gap-2.5 border-b border-slate-800/80 px-5">
+        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-950/40">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="height:18px;width:18px">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div>
+          <div class="text-sm font-bold tracking-tight text-white">Conftech</div>
+          <div class="text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">Lead Intelligence</div>
+        </div>
+      </div>
+
+      <nav class="flex-1 space-y-1 px-3 py-4">
+        <a href="/" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'dashboard' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
+          Dashboard
+        </a>
+        <a href="/leads" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'leads' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          Leads
+        </a>
+        <a href="/drafts" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'drafts' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path></svg>
+          Drafts
+        </a>
+      </nav>
+
+      <div class="border-t border-slate-800/80 px-3 py-4">
+        <div class="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline</div>
+        {% set dot_colors = {
+          'raw': 'bg-slate-500',
+          'researched': 'bg-sky-500',
+          'pending_review': 'bg-amber-500',
+          'approved': 'bg-emerald-500',
+          'rejected': 'bg-rose-500',
+          'drafted': 'bg-violet-500',
+          'error': 'bg-red-500'
+        } %}
+        {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
+        <a href="/leads?status={{ s }}" class="flex items-center justify-between rounded-lg px-3 py-1.5 text-xs transition hover:bg-slate-800/60 {{ 'bg-amber-500/10 font-semibold text-amber-300' if s == 'pending_review' else 'text-slate-400' }}">
+          <span class="flex items-center gap-2.5">
+            <span class="h-1.5 w-1.5 rounded-full {{ dot_colors[s] }}"></span>
+            {{ s|status_label }}
+          </span>
+          <span class="rounded-full bg-slate-800 px-2 py-0.5 font-semibold text-slate-300">{{ counts.get(s, 0) }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </aside>
+
+    {# ---------- Main ---------- #}
+    <main class="min-w-0 flex-1">
+      <div class="mx-auto max-w-6xl px-6 py-8 lg:px-10">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+</body>
+</html>
