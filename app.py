@@ -208,36 +208,40 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.cmd == "init-db":
-        db.init_schema()
-    elif args.cmd == "pipeline":
-        run_pipeline(args.target, args.limit)
-    elif args.cmd == "prospect":
-        prospect(args.target, args.limit)
-    elif args.cmd == "research":
-        research(limit=args.limit)
-    elif args.cmd == "score":
-        score(limit=args.limit)
-    elif args.cmd == "ghostwrite":
-        if args.lead_id:
-            from ghostwriter import ghostwrite_for_lead
+    try:
+        if args.cmd == "init-db":
+            db.init_schema()
+        elif args.cmd == "pipeline":
+            run_pipeline(args.target, args.limit)
+        elif args.cmd == "prospect":
+            prospect(args.target, args.limit)
+        elif args.cmd == "research":
+            research(limit=args.limit)
+        elif args.cmd == "score":
+            score(limit=args.limit)
+        elif args.cmd == "ghostwrite":
+            if args.lead_id:
+                from ghostwriter import ghostwrite_for_lead
 
-            lead = db.get_lead(args.lead_id)
-            if not lead:
-                print(f"Lead {args.lead_id} not found")
-                return 1
-            draft = ghostwrite_for_lead(lead)
-            print(f"Subject: {draft.get('subject')}\n\n{draft.get('email_body')}")
-        else:
-            ghostwrite_batch(limit=args.limit)
-    elif args.cmd == "review":
-        review_leads(limit=args.limit)
-    elif args.cmd == "watch":
-        watch(interval=args.interval)
-    elif args.cmd == "serve":
-        import uvicorn
+                lead = db.get_lead(args.lead_id)
+                if not lead:
+                    print(f"Lead {args.lead_id} not found")
+                    return 1
+                draft = ghostwrite_for_lead(lead)
+                print(f"Subject: {draft.get('subject')}\n\n{draft.get('email_body')}")
+            else:
+                ghostwrite_batch(limit=args.limit)
+        elif args.cmd == "review":
+            review_leads(limit=args.limit)
+        elif args.cmd == "watch":
+            watch(interval=args.interval)
+        elif args.cmd == "serve":
+            import uvicorn
 
-        uvicorn.run(build_api(), host="0.0.0.0", port=args.port)
+            uvicorn.run(build_api(), host="0.0.0.0", port=args.port)
+    except db.TableNotReadyError as exc:
+        print(f"\n[conftech] {exc}\n")
+        return 1
     return 0
 
 

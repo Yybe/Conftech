@@ -64,11 +64,19 @@ create index if not exists outreach_drafts_lead_idx on public.outreach_drafts (l
 """
 
 _client: Client | None = None
+_tables_verified: bool = False
+
+
+class TableNotReadyError(RuntimeError):
+    """Raised when the Supabase tables do not exist yet (PGRST205)."""
 
 
 def get_client() -> Client:
-    """Lazily create the Supabase client (service role)."""
-    global _client
+    """Lazily create the Supabase client (service role).
+
+    Also probes for the `leads` table once so every DB operation fails with a
+    friendly, actionable message when the schema hasn't been created yet."""
+    global _client, _tables_verified
     if _client is None:
         url = os.getenv("SUPABASE_URL", "").rstrip("/")
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -78,6 +86,19 @@ def get_client() -> Client:
                 "Copy .env.example to .env and fill in your keys."
             )
         _client = create_client(url, key)
+
+    if not _tables_verified:
+        try:
+            _client.table("leads").select("id").limit(1).execute()
+            _tables_verified = True
+        except Exception as exc:  # noqa: BLE001 - inspect, then re-raise
+            if getattr(exc, "code", "") == "PGRST205" or "Could not find the table" in str(exc):
+                raise TableNotReadyError(
+                    "Supabase tables do not exist yet. Create them with:\n"
+                    "  python app.py init-db\n"
+                    "(or paste schema.sql into Dashboard -> SQL Editor -> Run)"
+                ) from exc
+            raise
     return _client
 
 
