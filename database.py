@@ -83,11 +83,47 @@ def get_client() -> Client:
 
 # --- Schema bootstrap -------------------------------------------------------
 
-def init_schema() -> None:
-    """Create tables. Tries the HTTP /pg/query endpoint; if unavailable,
-    prints instructions to run schema.sql in the Supabase SQL editor."""
+def _project_ref(url: str) -> str | None:
+    """Extract the project ref from https://<ref>.supabase.co, or None."""
+    import re as _re
+
+    m = _re.match(r"https?://([a-z0-9]+)\.supabase\.co", url or "")
+    return m.group(1) if m else None
+
+
+def _init_schema_via_management_api() -> bool:
+    """Path 1: Management API, requires SUPABASE_ACCESS_TOKEN (sb_pat_...)
+    created in Dashboard -> Account -> Access Tokens."""
+    token = os.getenv("SUPABASE_ACCESS_TOKEN", "").strip()
+    ref = _project_ref(os.getenv("SUPABASE_URL", ""))
+    if not token or not ref:
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.supabase.com/v1/projects/{ref}/database/query",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"query": SCHEMA_SQL},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            print("[database] Schema ready via Management API (tables: leads, outreach_drafts).")
+            return True
+        print(f"[database] Management API failed ({resp.status_code}): {resp.text[:200]}")
+    except requests.RequestException as exc:
+        print(f"[database] Management API error: {exc}")
+    return False
+
+
+def _init_schema_via_pg_query() -> bool:
+    """Path 2: HTTP /pg/query endpoint with the service-role key (legacy,
+    disabled on many newer projects)."""
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url or not key:
+        return False
     try:
         resp = requests.post(
             f"{url}/pg/query",
@@ -101,15 +137,26 @@ def init_schema() -> None:
         )
         if resp.status_code in (200, 201):
             print("[database] Schema ready (tables: leads, outreach_drafts).")
-            return
+            return True
         print(f"[database] /pg/query unavailable ({resp.status_code}).")
     except requests.RequestException as exc:
         print(f"[database] /pg/query error: {exc}")
+    return False
+
+
+def init_schema() -> None:
+    """Create tables. Tries, in order: Management API (SUPABASE_ACCESS_TOKEN),
+    the HTTP /pg/query endpoint, then prints fallback instructions."""
+    if _init_schema_via_management_api() or _init_schema_via_pg_query():
+        return
 
     print(
-        "[database] Run this SQL manually in Supabase Dashboard -> SQL Editor:\n"
-        "           (or complete `opencode mcp auth supabase` and I can do it)\n"
-        + SCHEMA_SQL
+        "[database] Could not run DDL automatically. Options:\n"
+        "  1. Dashboard -> SQL Editor -> paste schema.sql -> Run (fastest).\n"
+        "  2. Create an Access Token (Dashboard -> Account -> Access Tokens),\n"
+        "     put it in .env as SUPABASE_ACCESS_TOKEN, and rerun `python app.py init-db`.\n"
+        "  3. Complete `opencode mcp auth supabase` and I can create it via MCP.\n"
+        "SQL to run:\n" + SCHEMA_SQL
     )
 
 

@@ -100,8 +100,10 @@ Supabase (project `mnjlrpkpldgpxdwtqdaj`, region ap-southeast-2).
 - **outreach_drafts**: `id (uuid)`, `lead_id (fk -> leads, cascade)`, `subject`,
   `email_body`, `created_at`
 
-Schema is created by `python app.py init-db` (uses the `/pg/query` endpoint with the
-service-role key) or manually via `schema.sql` in the Supabase SQL Editor.
+Schema is created by `python app.py init-db`, which tries in order:
+1. **Management API** — set `SUPABASE_ACCESS_TOKEN=sb_pat_...` in `.env` (Dashboard → Account → Access Tokens)
+2. **HTTP `/pg/query`** — legacy endpoint (disabled on many newer projects)
+3. Falls back to printing the SQL — paste `schema.sql` into the Dashboard → SQL Editor → Run
 
 ## Security notes
 
