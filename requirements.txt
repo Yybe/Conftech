@@ -1,0 +1,19 @@
+# Core
+supabase>=2.4.0
+requests>=2.31.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# API server (background jobs)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
+
+# --- Optional: full web crawling (uncomment to enable ScrapeGraphAI) ---
+# Requires Chromium/Playwright on first run:
+#   pip install scrapegraphai playwright
+#   playwright install chromium
+# scrapegraphai>=1.20.0
+# playwright>=1.44.0

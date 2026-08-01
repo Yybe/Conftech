@@ -1,0 +1,227 @@
+"""database.py - Supabase persistence layer for Conftech.
+
+Centralizes all access to the `leads` and `outreach_drafts` tables, plus the
+schema bootstrap (init_schema). Uses the SERVICE ROLE key so agents can
+read/write regardless of RLS policies (backend-only credential).
+
+Status flow:
+    raw -> researched -> pending_review -> approved -> drafted
+                         pending_review -> rejected
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import requests
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+
+# --- Status constants -------------------------------------------------------
+RAW = "raw"
+RESEARCHED = "researched"
+PENDING_REVIEW = "pending_review"
+APPROVED = "approved"
+REJECTED = "rejected"
+DRAFTED = "drafted"
+ERROR = "error"
+
+ALL_STATUSES = (RAW, RESEARCHED, PENDING_REVIEW, APPROVED, REJECTED, DRAFTED, ERROR)
+
+SCHEMA_SQL = """
+-- Conftech schema (idempotent)
+create extension if not exists "pgcrypto";
+
+create table if not exists public.leads (
+    id             uuid primary key default gen_random_uuid(),
+    company_name   text not null,
+    website        text,
+    target_product text,
+    tech_stack     jsonb not null default '[]'::jsonb,
+    contact_email  text,
+    fit_score      integer,
+    reasoning      text,
+    status         text not null default 'pending_review',
+    source         text,
+    scraped_data   jsonb not null default '{}'::jsonb,
+    created_at     timestamptz not null default now()
+);
+
+create index if not exists leads_status_idx on public.leads (status);
+
+create table if not exists public.outreach_drafts (
+    id         uuid primary key default gen_random_uuid(),
+    lead_id    uuid not null references public.leads (id) on delete cascade,
+    subject    text,
+    email_body text not null,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists outreach_drafts_lead_idx on public.outreach_drafts (lead_id);
+"""
+
+_client: Client | None = None
+
+
+def get_client() -> Client:
+    """Lazily create the Supabase client (service role)."""
+    global _client
+    if _client is None:
+        url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        if not url or not key:
+            raise RuntimeError(
+                "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing. "
+                "Copy .env.example to .env and fill in your keys."
+            )
+        _client = create_client(url, key)
+    return _client
+
+
+# --- Schema bootstrap -------------------------------------------------------
+
+def init_schema() -> None:
+    """Create tables. Tries the HTTP /pg/query endpoint; if unavailable,
+    prints instructions to run schema.sql in the Supabase SQL editor."""
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    try:
+        resp = requests.post(
+            f"{url}/pg/query",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={"query": SCHEMA_SQL},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            print("[database] Schema ready (tables: leads, outreach_drafts).")
+            return
+        print(f"[database] /pg/query unavailable ({resp.status_code}).")
+    except requests.RequestException as exc:
+        print(f"[database] /pg/query error: {exc}")
+
+    print(
+        "[database] Run this SQL manually in Supabase Dashboard -> SQL Editor:\n"
+        "           (or complete `opencode mcp auth supabase` and I can do it)\n"
+        + SCHEMA_SQL
+    )
+
+
+# --- Leads CRUD -------------------------------------------------------------
+
+def insert_lead(
+    company_name: str,
+    website: str | None,
+    tech_stack: list | None = None,
+    source: str = "theirstack",
+    target_product: str | None = None,
+    contact_email: str | None = None,
+) -> dict[str, Any]:
+    """Insert a lead; if a lead with the same website exists, return it unchanged
+    (dedupe). Returns the lead row dict."""
+    client = get_client()
+    if website:
+        existing = (
+            client.table("leads").select("id").eq("website", website).limit(1).execute()
+        )
+        if existing.data:
+            return existing.data[0]
+
+    row = {
+        "company_name": company_name,
+        "website": website,
+        "tech_stack": tech_stack or [],
+        "source": source,
+        "status": RAW,
+        "target_product": target_product,
+    }
+    if contact_email:
+        row["contact_email"] = contact_email
+
+    res = client.table("leads").insert(row).execute()
+    return res.data[0]
+
+
+def get_lead(lead_id: str) -> dict[str, Any] | None:
+    res = get_client().table("leads").select("*").eq("id", lead_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+
+def get_leads_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
+    res = (
+        get_client()
+        .table("leads")
+        .select("*")
+        .eq("status", status)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(res.data)
+
+
+def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Update arbitrary columns; silently ignores unknown keys."""
+    allowed = {
+        "company_name", "website", "target_product", "tech_stack", "contact_email",
+        "fit_score", "reasoning", "status", "source", "scraped_data",
+    }
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    if not payload:
+        return get_lead(lead_id)
+    res = get_client().table("leads").update(payload).eq("id", lead_id).execute()
+    return res.data[0] if res.data else None
+
+
+def set_status(lead_id: str, status: str) -> None:
+    if status not in ALL_STATUSES:
+        raise ValueError(f"Invalid status: {status}")
+    update_lead(lead_id, status=status)
+
+
+# --- Outreach drafts --------------------------------------------------------
+
+def insert_draft(lead_id: str, subject: str, email_body: str) -> dict[str, Any]:
+    """Insert one draft per lead (existing draft for the lead is replaced)."""
+    client = get_client()
+    client.table("outreach_drafts").delete().eq("lead_id", lead_id).execute()
+    res = (
+        client.table("outreach_drafts")
+        .insert({"lead_id": lead_id, "subject": subject, "email_body": email_body})
+        .execute()
+    )
+    return res.data[0]
+
+
+def list_drafts(limit: int = 50) -> list[dict[str, Any]]:
+    res = (
+        get_client()
+        .table("outreach_drafts")
+        .select("*, leads(company_name, website)")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(res.data)
+
+
+def count_by_status() -> dict[str, int]:
+    """Per-status counts via PostgREST (no SQL endpoint dependency)."""
+    counts: dict[str, int] = {}
+    for status in ALL_STATUSES:
+        res = (
+            get_client()
+            .table("leads")
+            .select("id", count="exact")
+            .eq("status", status)
+            .limit(1)
+            .execute()
+        )
+        counts[status] = res.count if hasattr(res, "count") else 0
+    return counts
