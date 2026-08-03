@@ -1,11 +1,21 @@
 """researcher.py - The Deep Researcher agent.
 
-Crawls each raw lead's website with a 3-tier extraction strategy and persists
-findings to leads.scraped_data (status -> 'researched'):
+Crawls each raw lead's website (homepage + contact/about pages + prioritized
+internal pages, up to MAX_CRAWL_PAGES) with a 3-tier extraction strategy and
+persists findings to leads.scraped_data (status -> 'researched'):
 
-  1. ScrapeGraphAI - real browser rendering + prompt-driven extraction
-  2. BS4 + LLM     - page text cleaned with BeautifulSoup, analyzed by Gemma
-  3. BS4 raw       - plain HTML parsing (always available, never raises)
+  1. ScrapeGraphAI - real browser rendering of the homepage + BS4+Gemma on the rest
+  2. BS4 + Gemma    - every crawled page cleaned with BeautifulSoup, analyzed by Gemma
+  3. BS4 raw        - plain HTML parsing (always available, never raises)
+
+Every finding is stored as an evidence entry with its source URL and a
+verbatim quote matched from the page text, so the scorer and the UI can show
+an auditable trail (claim -> page -> quote):
+
+    scraped_data.evidence = [
+        {"type": "pain_point", "text": "...", "url": "https://...", "quote": "..."},
+        ...
+    ]
 
 Extraction goal comes from /prompts/researcher.md.
 HTML pages are disk-cached (30-day TTL) to cut bandwidth and rate limits.
@@ -13,9 +23,9 @@ HTML pages are disk-cached (30-day TTL) to cut bandwidth and rate limits.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
 from dotenv import load_dotenv
@@ -32,37 +42,40 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 )
 CONTACT_PATHS = ("/contact", "/contact-us", "/about", "/about-us")
-RESEARCH_KEYS = ("mission", "pain_points", "contact_emails", "product_mentions", "summary")
 MAX_PAGE_TEXT = 6000
+MAX_CRAWL_PAGES = 8
 
+_PRIORITY_KEYWORDS = (
+    "about", "service", "solution", "platform", "product", "technology",
+    "customer", "case", "client", "career", "news", "partner", "pricing",
+    "why", "contact", "support", "help", "resource",
+)
+_SKIP_KEYWORDS = (
+    "login", "signin", "signup", "register", "privacy", "terms", "legal",
+    "cookie", "sitemap",
+)
+_SKIP_EXT = (
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".xml",
+    ".json", ".zip", ".mp4", ".mp3", ".doc", ".docx", ".xls", ".xlsx",
+    ".ppt", ".pptx",
+)
+_STOPWORDS = {
+    "the", "and", "for", "with", "our", "your", "that", "this", "from",
+    "are", "was", "were", "has", "have", "had", "they", "their", "its",
+    "not", "you", "we", "us", "can", "will", "would", "could", "should",
+    "may", "might", "into", "over", "under", "about", "than", "then",
+    "them", "who", "what", "when", "where", "which", "more", "most",
+}
 
-# --- Tier 1: ScrapeGraphAI (real browser rendering) --------------------------
-
-def _scrapegraphai_extract(url: str, prompt: str) -> dict[str, Any]:
-    """Render the page in a real browser (JS included), then analyze the text.
-
-    SmartScraperGraph's own GenerateAnswer node short-circuits on free OpenRouter
-    models (returns garbage / 'no content'), so we use its Fetch+Parse nodes for
-    the browser rendering and run our own proven extraction prompt on the result.
-    """
-    import scrapegraphai_compat
-
-    scrapegraphai_compat.patch()  # ChatOllama shim for langchain-community 0.4+
-    try:
-        from scrapegraphai.nodes import FetchNode, ParseNode
-    except ImportError as exc:
-        raise RuntimeError(f"scrapegraphai not installed: {exc}") from exc
-
-    node_config = {"headless": True, "chunk_size": 8000}
-    fetch = FetchNode(input="url", output="html", node_config=node_config)
-    parse = ParseNode(input="h", output="parsed_doc", node_config=node_config)
-    state = fetch.execute({"url": url, "user_prompt": prompt})
-    state = parse.execute(state)
-    docs = state.get("parsed_doc") or []
-    text = " ".join(str(d) for d in docs)
-    if not text.strip():
-        raise RuntimeError("ScrapeGraphAI rendered the page but extracted no text")
-    return _analyze_text(url, text, prompt, "scrapegraphai")
+# Tech-stack detections that signal legacy/hybrid/cloud infrastructure. These are
+# real TheirStack detections; the researcher turns them into `stack_signal`
+# evidence entries (sourced to the company website) so the scorer can cite them.
+_STACK_SIGNAL_HINTS = (
+    "vmware", "hyperv", "mainframe", "windows-server", "windows-200", "windows-nt",
+    "oracle", "sap", "ibm", "netapp", "mssql", "db2", "cobol", "solaris",
+    "exchange", "sharepoint", "iis", "aws", "amazon-web-services", "azure",
+    "google-cloud", "gcp", "kubernetes", "terraform", "cloudflare",
+)
 
 
 # --- Page fetching / cleaning -------------------------------------------------
@@ -89,105 +102,266 @@ def _clean_text(html: str) -> str:
     return re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
 
 
-def _scan_emails(url: str) -> list[str]:
-    """Collect emails from the homepage and a few contact/about pages."""
+def _scan_page_emails(text: str) -> list[str]:
+    """Deduplicated emails found in a page's visible text."""
     emails: set[str] = set()
-    pages = [url] + [url.rstrip("/") + p for p in CONTACT_PATHS]
-    for page in pages:
-        try:
-            text = _clean_text(_fetch_page(page))
-        except Exception:  # noqa: BLE001 - any page failure is non-fatal
-            continue
-        for m in EMAIL_RE.findall(text):
-            if not m.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
-                emails.add(m.lower())
+    for m in EMAIL_RE.findall(text):
+        if not m.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+            emails.add(m.lower())
     return sorted(emails)
 
 
-def _normalize_findings(findings: dict) -> dict[str, Any]:
-    """Keep only known keys with safe types."""
-    out: dict[str, Any] = {}
-    for key in RESEARCH_KEYS:
-        value = findings.get(key)
-        if key in ("pain_points", "contact_emails", "product_mentions"):
-            out[key] = [str(v) for v in value] if isinstance(value, list) else []
-        else:
-            out[key] = str(value or "")
-    return out
+# --- Multi-page crawl ---------------------------------------------------------
+
+def _normalize_page_url(base: str, href: str) -> str | None:
+    """Resolve an href to an absolute same-domain https URL, or None if unusable."""
+    href = href.strip()
+    if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+        return None
+    try:
+        url = urljoin(base, href)
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    base_netloc = urlparse(base).netloc.lower()
+    netloc = parsed.netloc.lower()
+    if netloc != base_netloc and not netloc.endswith("." + base_netloc):
+        return None
+    path = parsed.path.lower()
+    if path.endswith(_SKIP_EXT) or any(k in path for k in _SKIP_KEYWORDS):
+        return None
+    return url.split("#")[0].split("?")[0]
 
 
-def _finalize(url: str, findings: dict[str, Any], extractor: str) -> dict[str, Any]:
-    """Normalize findings and merge regex-scanned emails (more reliable than LLM)."""
-    out = _normalize_findings(findings)
-    emails = set(out["contact_emails"])
-    emails.update(_scan_emails(url))
-    out["contact_emails"] = sorted(emails)
-    if not out["summary"]:
+def _discover_pages(url: str) -> list[str]:
+    """Homepage + contact/about pages + prioritized internal links, capped.
+
+    Contact/about pages come first because they hold the emails and mission.
+    """
+    pages: list[str] = [url]
+    base = url.rstrip("/")
+    for p in CONTACT_PATHS:
+        u = base + p
+        if u not in pages:
+            pages.append(u)
+
+    try:
+        html = _fetch_page(url)
+    except Exception:  # noqa: BLE001 - homepage fetch failure is non-fatal
+        return pages[:MAX_CRAWL_PAGES]
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    candidates: dict[str, str] = {}
+    for a in soup.find_all("a", href=True):
+        u = _normalize_page_url(url, a["href"])
+        if u and u not in pages:
+            candidates.setdefault(u, urlparse(u).path.lower())
+
+    ordered = sorted(
+        candidates.items(),
+        key=lambda kv: (0 if any(k in kv[1] for k in _PRIORITY_KEYWORDS) else 1, kv[0]),
+    )
+    for u, _path in ordered:
+        if len(pages) >= MAX_CRAWL_PAGES:
+            break
+        pages.append(u)
+    return pages[:MAX_CRAWL_PAGES]
+
+
+def _crawl_pages(url: str) -> list[dict[str, str]]:
+    """Fetch every discovered page. Returns [{url, title, meta, text}]."""
+    pages: list[dict[str, str]] = []
+    for page_url in _discover_pages(url):
         try:
-            out["summary"] = _clean_text(_fetch_page(url))[:300]
-        except Exception:  # noqa: BLE001
-            pass
-    out["extractor"] = extractor
-    return out
+            html = _fetch_page(page_url)
+        except Exception:  # noqa: BLE001 - per-page failure is non-fatal
+            continue
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "lxml")
+        title = (soup.title.get_text(strip=True) if soup.title else "") or ""
+        meta = ""
+        tag = soup.find("meta", attrs={"name": re.compile("description", re.I)})
+        if tag and tag.get("content"):
+            meta = tag["content"].strip()
+        for tag2 in soup(["script", "style", "noscript", "svg"]):
+            tag2.decompose()
+        text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+        pages.append({"url": page_url, "title": title, "meta": meta, "text": text})
+    if not pages:
+        raise RuntimeError(f"could not fetch any pages for {url}")
+    return pages
 
 
-def _analyze_text(url: str, text: str, prompt: str, extractor: str) -> dict[str, Any]:
-    """Gemma analysis of already-obtained page text (shared by tiers 1 & 2)."""
+# --- Verbatim quote matching --------------------------------------------------
+
+def _match_quote(text: str, finding: str) -> str:
+    """Return the verbatim sentence from `text` that best matches `finding`, or ''.
+
+    The quote is always a real substring of the page text - never fabricated.
+    Returns '' when no sentence is a good enough match.
+    """
+
+    def sig_words(s: str) -> set[str]:
+        return {
+            w for w in re.findall(r"[a-z0-9']+", s.lower())
+            if len(w) > 2 and w not in _STOPWORDS
+        }
+
+    fw = sig_words(finding)
+    if not fw:
+        return ""
+    best, best_score = "", 0
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        sw = sig_words(sent)
+        if not sw:
+            continue
+        overlap = len(fw & sw)
+        if overlap > best_score:
+            best, best_score = sent.strip(), overlap
+    if best_score >= 2 or best_score >= 0.6 * len(fw):
+        return best
+    return ""
+
+
+# --- Per-page LLM analysis ----------------------------------------------------
+
+def _analyze_page(url: str, text: str, prompt: str) -> dict[str, Any]:
+    """Gemma analysis of ONE page's text -> {'summary': str, 'evidence': [...]}.
+
+    The LLM never provides URLs or quotes: the URL is this page's URL and the
+    quote is matched verbatim from `text` in Python.
+    """
     if len(text) < 60:
         raise RuntimeError("page has too little visible text for LLM analysis")
 
     user = (
         prompt
-        + f"\n\nWebsite: {url}\n\nPAGE TEXT (trimmed to {MAX_PAGE_TEXT} chars):\n\n"
+        + f"\n\nPage URL: {url}\n\nPAGE TEXT (trimmed to {MAX_PAGE_TEXT} chars):\n\n"
         + text[:MAX_PAGE_TEXT]
     )
     reply = chat(
         system="You are a meticulous research extraction engine. Follow the goal exactly.",
         user=user,
-        max_tokens=800,
+        max_tokens=500,
     )
-    return _finalize(url, parse_json(reply), extractor)
+    data = parse_json(reply)
+
+    evidence: list[dict[str, Any]] = []
+    for pp in data.get("pain_points", []) or []:
+        if isinstance(pp, str) and pp.strip():
+            evidence.append(
+                {"type": "pain_point", "text": pp.strip(), "url": url, "quote": _match_quote(text, pp)}
+            )
+    for pm in data.get("product_mentions", []) or []:
+        if isinstance(pm, str) and pm.strip():
+            evidence.append(
+                {"type": "product_mention", "text": pm.strip(), "url": url, "quote": _match_quote(text, pm)}
+            )
+    summary = str(data.get("summary", "") or "").strip()
+    if summary:
+        evidence.append({"type": "summary", "text": summary, "url": url, "quote": _match_quote(text, summary)})
+
+    if not evidence:
+        raise RuntimeError(f"LLM found no usable findings on {url}")
+    return {"summary": summary, "evidence": evidence}
 
 
-# --- Tier 2: BS4 + Gemma (no browser, but LLM-level analysis) -----------------
+# --- Tier 1: ScrapeGraphAI (real browser rendering) --------------------------
 
-def _bs4_gemma_extract(url: str, prompt: str) -> dict[str, Any]:
-    """Clean the page text with BeautifulSoup, then have Gemma analyze it."""
-    return _analyze_text(url, _clean_text(_fetch_page(url)), prompt, "bs4+gemma")
+def _scrapegraphai_render(url: str) -> str:
+    """Render the page in a real browser (JS included), return visible text.
+
+    SmartScraperGraph's own GenerateAnswer node short-circuits on free OpenRouter
+    models (returns garbage / 'no content'), so we use its Fetch+Parse nodes for
+    the browser rendering and run our own proven extraction prompt on the result.
+    """
+    import scrapegraphai_compat
+
+    scrapegraphai_compat.patch()  # ChatOllama shim for langchain-community 0.4+
+    try:
+        from scrapegraphai.nodes import FetchNode, ParseNode
+    except ImportError as exc:
+        raise RuntimeError(f"scrapegraphai not installed: {exc}") from exc
+
+    node_config = {"headless": True, "chunk_size": 8000}
+    fetch = FetchNode(input="url", output="html", node_config=node_config)
+    parse = ParseNode(input="h", output="parsed_doc", node_config=node_config)
+    state = fetch.execute({"url": url, "user_prompt": "extract page text"})
+    state = parse.execute(state)
+    docs = state.get("parsed_doc") or []
+    text = " ".join(str(d) for d in docs)
+    if not text.strip():
+        raise RuntimeError("ScrapeGraphAI rendered the page but extracted no text")
+    return text
 
 
-# --- Tier 3: BS4 raw (no LLM, always available) ------------------------------
+# --- Merge --------------------------------------------------------------------
 
-def _fallback_extract(url: str) -> dict[str, Any]:
-    """Plain HTML parsing - the always-works safety net."""
-    from bs4 import BeautifulSoup
+def _finalize(
+    url: str,
+    pages: list[dict[str, str]],
+    page_results: list[tuple[str, dict[str, Any]]],
+    emails_by_url: list[tuple[str, str]],
+    extractor: str,
+) -> dict[str, Any]:
+    """Merge per-page results + scanned emails into the final scraped_data shape."""
+    evidence: list[dict[str, Any]] = []
+    for _page_url, res in page_results:
+        evidence.extend(res.get("evidence", []))
 
-    soup = BeautifulSoup(_fetch_page(url), "lxml")
-    for tag in soup(["script", "style", "noscript", "svg"]):
-        tag.decompose()
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict[str, Any]] = []
+    for ev in evidence:
+        key = (ev.get("type", ""), ev.get("text", ""))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(ev)
+    evidence = uniq
 
-    title = (soup.title.get_text(strip=True) if soup.title else "") or ""
-    meta_desc = ""
-    tag = soup.find("meta", attrs={"name": re.compile("description", re.I)})
-    if tag and tag.get("content"):
-        meta_desc = tag["content"].strip()
+    pain_points = [e["text"] for e in evidence if e["type"] == "pain_point"]
+    product_mentions = [e["text"] for e in evidence if e["type"] == "product_mention"]
+    summaries = [e["text"] for e in evidence if e["type"] == "summary"]
 
-    visible = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-    summary = (meta_desc or visible)[:400].strip()
+    contact_emails = sorted({email for _u, email in emails_by_url})
+    for page_url, email in emails_by_url:
+        evidence.append({"type": "email", "text": email, "url": page_url, "quote": ""})
+
     return {
-        "mission": title,
-        "pain_points": [],
-        "contact_emails": _scan_emails(url),
-        "product_mentions": [],
-        "summary": summary,
-        "extractor": "bs4-fallback",
+        "mission": pages[0].get("title", "") if pages else "",
+        "summary": summaries[0] if summaries else "",
+        "pain_points": pain_points,
+        "contact_emails": contact_emails,
+        "product_mentions": product_mentions,
+        "pages_crawled": [p["url"] for p in pages],
+        "evidence": evidence,
+        "extractor": extractor,
     }
+
+
+def _stack_signal_evidence(lead: dict[str, Any], homepage: str) -> list[dict[str, Any]]:
+    """TheirStack detections -> citable evidence entries (source = company site).
+
+    These are real detections of legacy/hybrid/cloud tech that the page text may
+    never mention, so they get their own evidence type with an empty quote.
+    """
+    hits = [
+        t for t in (lead.get("tech_stack") or [])
+        if isinstance(t, str) and any(k in t.lower() for k in _STACK_SIGNAL_HINTS)
+    ]
+    return [
+        {"type": "stack_signal", "text": f"runs {t}", "url": homepage, "quote": ""}
+        for t in hits[:20]
+    ]
 
 
 # --- Orchestration ------------------------------------------------------------
 
 def research_one(lead: dict[str, Any]) -> dict[str, Any]:
-    """Crawl one lead's website and persist findings."""
+    """Crawl a lead's website (multi-page) and persist findings with evidence."""
     url = lead.get("website")
     if not url:
         raise ValueError(f"Lead {lead['id']} has no website")
@@ -195,25 +369,79 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
     prompt = load_prompt("researcher.md") + "\n\nWebsite to analyze: " + url
 
     try:
+        pages = _crawl_pages(url)
+        emails_by_url = [
+            (p["url"], email)
+            for p in pages
+            for email in _scan_page_emails(p["text"])
+        ]
+
+        home_analysis: dict[str, Any] | None = None
+        extractor = "bs4+gemma"
         try:
-            findings = _finalize(url, _scrapegraphai_extract(url, prompt), "scrapegraphai")
+            home_text = _scrapegraphai_render(url)
+            home_analysis = _analyze_page(url, home_text, prompt)
+            extractor = "scrapegraphai+bs4+gemma"
         except Exception as exc:
             print(f"[researcher] ScrapeGraphAI unavailable for {url} ({exc}); trying BS4+LLM.")
-            try:
-                findings = _bs4_gemma_extract(url, prompt)
-            except Exception as exc2:
-                print(f"[researcher] BS4+LLM failed for {url} ({exc2}); using raw BS4 fallback.")
-                findings = _fallback_extract(url)
 
-        return db.update_lead(
-            lead["id"],
-            scraped_data=findings,
-            contact_email=(findings.get("contact_emails") or [None])[0],
-            status=db.RESEARCHED,
-        )
+        page_results: list[tuple[str, dict[str, Any]]] = []
+        for i, page in enumerate(pages):
+            if i == 0 and home_analysis is not None:
+                page_results.append((page["url"], home_analysis))
+                continue
+            try:
+                page_results.append((page["url"], _analyze_page(page["url"], page["text"], prompt)))
+            except Exception as exc2:
+                print(f"[researcher] BS4+LLM failed for {page['url']} ({exc2}); raw fallback for this page.")
+                summary = page["meta"] or page["title"]
+                evidence = (
+                    [{"type": "summary", "text": summary, "url": page["url"], "quote": page["meta"]}]
+                    if summary
+                    else []
+                )
+                page_results.append((page["url"], {"summary": summary, "evidence": evidence}))
+
+        findings = _finalize(url, pages, page_results, emails_by_url, extractor)
     except Exception as exc:
-        db.update_lead(lead["id"], status=db.ERROR)
-        raise RuntimeError(f"Research failed for {url}: {exc}") from exc
+        # Tier 3: plain BS4 for every page (no LLM) - the always-works safety net.
+        print(f"[researcher] LLM path failed for {url} ({exc}); using raw BS4 fallback.")
+        try:
+            pages = _crawl_pages(url)
+        except Exception as exc3:
+            db.update_lead(lead["id"], status=db.ERROR)
+            raise RuntimeError(f"Research failed for {url}: {exc3}") from exc3
+        emails_by_url = [
+            (p["url"], email)
+            for p in pages
+            for email in _scan_page_emails(p["text"])
+        ]
+        page_results = []
+        for page in pages:
+            summary = page["meta"] or page["title"]
+            evidence = (
+                [{"type": "summary", "text": summary, "url": page["url"], "quote": page["meta"]}]
+                if summary
+                else []
+            )
+            page_results.append((page["url"], {"summary": summary, "evidence": evidence}))
+        findings = _finalize(url, pages, page_results, emails_by_url, "bs4-fallback")
+
+    # Quality gate: status=researched must mean REAL content exists.
+    findings["evidence"].extend(_stack_signal_evidence(lead, url))
+    signal_count = sum(
+        1 for e in findings["evidence"] if e["type"] in ("pain_point", "product_mention", "summary")
+    )
+    if signal_count == 0 and not findings["contact_emails"] and len(findings["summary"]) < 60:
+        db.update_lead(lead["id"], scraped_data=findings, status=db.ERROR)
+        raise RuntimeError(f"quality gate: no usable content found for {url}")
+
+    return db.update_lead(
+        lead["id"],
+        scraped_data=findings,
+        contact_email=(findings["contact_emails"] or [None])[0],
+        status=db.RESEARCHED,
+    )
 
 
 def research(status: str = db.RAW, limit: int = 20) -> list[dict[str, Any]]:

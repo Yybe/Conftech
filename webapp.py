@@ -140,7 +140,7 @@ def build_app() -> FastAPI:
         for s in (db.PENDING_REVIEW, db.APPROVED, db.DRAFTED, db.RAW, db.RESEARCHED):
             for lead in db.get_leads_by_status(s, limit=4):
                 recent_leads.append(lead)
-        recent_leads.sort(key=lambda l: l.get("created_at") or "", reverse=True)
+        recent_leads.sort(key=lambda l: (l.get("fit_score") is None, l.get("fit_score") or 0), reverse=True)
         recent_drafts = [_normalize_draft(d) for d in db.list_drafts(limit=5)]
         return templates.TemplateResponse(
             request,
@@ -162,6 +162,8 @@ def build_app() -> FastAPI:
         min_score: int | None = None,
     ):
         leads = db.list_leads(status=status, min_score=min_score, limit=100)
+        # Best-fit first: scored leads sorted by fit_score desc, unscored at the bottom.
+        leads.sort(key=lambda l: (l.get("fit_score") is None, l.get("fit_score") or 0), reverse=True)
         counts = db.count_by_status()
         notice = request.query_params.get("notice", "")
         return templates.TemplateResponse(

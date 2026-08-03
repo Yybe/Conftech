@@ -19,17 +19,19 @@ GHOSTWRITER_MAX_TOKENS = 450
 
 def ghostwrite_for_lead(lead: dict[str, Any]) -> dict[str, Any]:
     """Write + persist a draft for one approved lead."""
+    scraped = lead.get("scraped_data", {}) or {}
     company = {
         "name": lead.get("company_name"),
         "website": lead.get("website"),
         "tech_stack": lead.get("tech_stack", []),
-        "scraped": lead.get("scraped_data", {}),
+        "scraped": scraped,
     }
     user = json.dumps(
         {
             "target_product": lead.get("target_product") or "unknown",
             "company": company,
             "scorer_reasoning": lead.get("reasoning", ""),
+            "evidence": scraped.get("score_evidence") or scraped.get("evidence") or [],
         },
         ensure_ascii=False,
         indent=2,

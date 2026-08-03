@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"  # gemma-2-9b-it:free is deprecated (404)
+DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"  # MoE, structured outputs, low latency (best balance)
 MAX_RETRIES = 3
 
 
@@ -29,7 +29,7 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def chat(system: str, user: str, max_tokens: int = 700) -> str:
+def chat(system: str, user: str, max_tokens: int = 700, response_format: dict | None = None) -> str:
     """Call OpenRouter with the configured model. Returns raw text content."""
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     model = os.getenv("LLM_MODEL", DEFAULT_MODEL)
@@ -44,6 +44,8 @@ def chat(system: str, user: str, max_tokens: int = 700) -> str:
         ],
         "max_tokens": max_tokens,
     }
+    if response_format:
+        body["response_format"] = response_format
 
     last_err: Exception | None = None
     for attempt in range(MAX_RETRIES):

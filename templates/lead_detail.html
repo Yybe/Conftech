@@ -48,6 +48,41 @@
   </div>
 </div>
 
+{# ---------- Why this lead (evidence trail) ---------- #}
+{% set sd = lead.scraped_data or {} %}
+<section class="mt-8 rounded-2xl border border-indigo-900/50 bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-900 p-6">
+  <div class="flex items-center gap-3">
+    <h2 class="text-sm font-semibold uppercase tracking-widest text-indigo-300">Why this lead</h2>
+    {% if sd.score_evidence %}
+    <span class="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[10px] font-medium text-indigo-300">{{ sd.score_evidence|length }} evidence item(s)</span>
+    {% endif %}
+  </div>
+
+  {% if lead.reasoning %}
+  <p class="mt-3 text-sm leading-relaxed text-slate-200">{{ lead.reasoning }}</p>
+  {% else %}
+  <p class="mt-3 text-sm text-slate-500">Not scored yet.</p>
+  {% endif %}
+
+  {% if sd.score_evidence %}
+  <ul class="mt-4 space-y-3">
+    {% for ev in sd.score_evidence %}
+    <li class="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div class="text-sm font-medium text-slate-100">{{ ev.claim }}</div>
+        {% if ev.url %}
+        <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(38, True) }}</a>
+        {% endif %}
+      </div>
+      {% if ev.quote %}
+      <blockquote class="mt-2 border-l-2 border-indigo-500/50 pl-3 text-xs leading-relaxed text-slate-400">“{{ ev.quote }}”</blockquote>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
 {# ---------- Info grid ---------- #}
 <div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
   <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
@@ -92,6 +127,9 @@
     <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Research</h2>
     {% if sd.extractor %}
     <span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">{{ sd.extractor }}</span>
+    {% endif %}
+    {% if sd.pages_crawled %}
+    <span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">{{ sd.pages_crawled|length }} pages crawled</span>
     {% endif %}
   </div>
 
@@ -145,21 +183,31 @@
       </div>
     </div>
     {% endif %}
-  </div>
-</section>
-{% endif %}
 
-{# ---------- Reasoning ---------- #}
-<section class="mt-8">
-  <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Scoring reasoning</h2>
-  <div class="mt-3 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-    {% if lead.reasoning %}
-    <p class="text-sm leading-relaxed text-slate-300">{{ lead.reasoning }}</p>
-    {% else %}
-    <p class="text-sm text-slate-500">Not scored yet.</p>
+    {% if sd.evidence %}
+    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Raw findings (with sources)</div>
+      <ul class="mt-3 space-y-2.5">
+        {% for ev in sd.evidence %}
+        <li class="flex items-start justify-between gap-3 text-sm">
+          <div class="min-w-0">
+            <span class="mr-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ ev.type }}</span>
+            <span class="text-slate-300">{{ ev.text }}</span>
+            {% if ev.quote %}
+            <div class="mt-1 text-xs italic text-slate-500">“{{ ev.quote }}”</div>
+            {% endif %}
+          </div>
+          {% if ev.url %}
+          <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
     {% endif %}
   </div>
 </section>
+{% endif %}
 
 {# ---------- Draft ---------- #}
 <section class="mt-8">

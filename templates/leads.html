@@ -58,6 +58,7 @@
           <th class="px-4 py-3 font-semibold">Target</th>
           <th class="px-4 py-3 font-semibold">Status</th>
           <th class="px-4 py-3 font-semibold">Fit</th>
+          <th class="px-4 py-3 font-semibold">Why (evidence)</th>
           <th class="px-4 py-3 font-semibold">Found</th>
         </tr>
       </thead>
@@ -82,6 +83,21 @@
             <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
           </td>
           <td class="px-4 py-3 font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</td>
+          <td class="px-4 py-3">
+            {% set sd = lead.scraped_data or {} %}
+            {% if lead.reasoning %}
+            <a href="/leads/{{ lead.id }}" class="group flex items-start gap-1.5">
+              <span class="text-xs text-slate-400 group-hover:text-indigo-300">{{ lead.reasoning|truncate(110, True) }}</span>
+              {% if sd.score_evidence %}
+              <span class="shrink-0 rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300" title="evidence citations">{{ sd.score_evidence|length }} ev</span>
+              {% endif %}
+            </a>
+            {% elif sd.evidence %}
+            <a href="/leads/{{ lead.id }}" class="text-xs text-slate-500 hover:text-indigo-300">{{ sd.evidence|length }} finding(s), unscored</a>
+            {% else %}
+            <span class="text-xs text-slate-600">—</span>
+            {% endif %}
+          </td>
           <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>
         </tr>
         {% endfor %}
