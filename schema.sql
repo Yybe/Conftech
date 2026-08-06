@@ -4,19 +4,25 @@
 create extension if not exists "pgcrypto";
 
 create table if not exists public.leads (
-    id             uuid primary key default gen_random_uuid(),
-    company_name   text not null,
-    website        text,
-    target_product text,
-    tech_stack     jsonb not null default '[]'::jsonb,
-    contact_email  text,
-    fit_score      integer,
-    reasoning      text,
-    status         text not null default 'pending_review',
-    source         text,
-    scraped_data   jsonb not null default '{}'::jsonb,
-    created_at     timestamptz not null default now()
+    id               uuid primary key default gen_random_uuid(),
+    company_name     text not null,
+    website          text,
+    target_product   text,
+    tech_stack       jsonb not null default '[]'::jsonb,
+    contact_email    text,
+    fit_score        integer,
+    confidence_score integer,
+    reasoning        text,
+    status           text not null default 'pending_review',
+    source           text,
+    scraped_data     jsonb not null default '{}'::jsonb,
+    company_profile  jsonb not null default '{}'::jsonb,
+    created_at       timestamptz not null default now()
 );
+
+-- Idempotent upgrade for databases created before these columns existed.
+alter table public.leads add column if not exists confidence_score integer;
+alter table public.leads add column if not exists company_profile jsonb not null default '{}'::jsonb;
 
 create index if not exists leads_status_idx on public.leads (status);
 

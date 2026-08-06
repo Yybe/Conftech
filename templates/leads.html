@@ -58,6 +58,7 @@
           <th class="px-4 py-3 font-semibold">Target</th>
           <th class="px-4 py-3 font-semibold">Status</th>
           <th class="px-4 py-3 font-semibold">Fit</th>
+          <th class="px-4 py-3 font-semibold">Conf</th>
           <th class="px-4 py-3 font-semibold">Why (evidence)</th>
           <th class="px-4 py-3 font-semibold">Found</th>
         </tr>
@@ -83,6 +84,15 @@
             <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
           </td>
           <td class="px-4 py-3 font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</td>
+          <td class="px-4 py-3">
+            {% set sd = lead.scraped_data or {} %}
+            {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+            {% if conf is not none %}
+            <span class="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-bold text-sky-300">{{ conf }}%</span>
+            {% else %}
+            <span class="text-xs text-slate-600">—</span>
+            {% endif %}
+          </td>
           <td class="px-4 py-3">
             {% set sd = lead.scraped_data or {} %}
             {% if lead.reasoning %}

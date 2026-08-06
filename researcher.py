@@ -4,18 +4,27 @@ Crawls each raw lead's website (homepage + contact/about pages + prioritized
 internal pages, up to MAX_CRAWL_PAGES) with a 3-tier extraction strategy and
 persists findings to leads.scraped_data (status -> 'researched'):
 
-  1. ScrapeGraphAI - real browser rendering of the homepage + BS4+Gemma on the rest
-  2. BS4 + Gemma    - every crawled page cleaned with BeautifulSoup, analyzed by Gemma
+  1. ScrapeGraphAI - real browser rendering of the homepage + BS4+LLM on the rest
+  2. BS4 + LLM     - every crawled page cleaned with BeautifulSoup, analyzed
   3. BS4 raw        - plain HTML parsing (always available, never raises)
 
-Every finding is stored as an evidence entry with its source URL and a
-verbatim quote matched from the page text, so the scorer and the UI can show
-an auditable trail (claim -> page -> quote):
+Every finding is stored as an evidence entry with its source URL, page title,
+and a verbatim quote matched from the page text, so the scorer and the UI can
+show an auditable trail (claim -> page -> quote):
 
     scraped_data.evidence = [
-        {"type": "pain_point", "text": "...", "url": "https://...", "quote": "..."},
+        {"type": "pain_point", "text": "...", "url": "https://...",
+         "quote": "...", "page_title": "..."},
         ...
     ]
+
+Contact emails are ranked: decision-maker addresses (cto@, engineering@,
+infrastructure@, security@, ...) sort first; generic boxes (info@, support@,
+careers@) are kept but marked low priority.
+
+Explicit buying signals (cloud migration, legacy system, technical debt, ...)
+are detected deterministically in page text and stored as `buying_signal`
+evidence so the scorer can weight them as the strongest fit signal.
 
 Extraction goal comes from /prompts/researcher.md.
 HTML pages are disk-cached (30-day TTL) to cut bandwidth and rate limits.
@@ -32,7 +41,7 @@ from dotenv import load_dotenv
 
 import cache
 import database as db
-from llm import chat, load_prompt, parse_json
+from llm import chat_json, load_prompt
 
 load_dotenv()
 
@@ -44,6 +53,36 @@ USER_AGENT = (
 CONTACT_PATHS = ("/contact", "/contact-us", "/about", "/about-us")
 MAX_PAGE_TEXT = 6000
 MAX_CRAWL_PAGES = 8
+
+# Contact email ranking -------------------------------------------------------
+# Local-part keywords, ordered: best (decision-maker) -> functional -> generic.
+# Decision-maker roles are what a salesperson can actually reach out to.
+_DECISION_MAKER_KEYS = (
+    "cto", "cio", "ceo", "coo", "chief", "director", "head", "vp", "owner",
+    "founder", "partner", "engineering", "infra", "infrastructure", "cloud",
+    "technology", "tech", "platform", "security", "operations", "ops", "devops",
+)
+_FUNCTIONAL_KEYS = (
+    "sales", "marketing", "finance", "procurement", "purchasing", "accounts", "accounting",
+)
+
+# Explicit buying signals - much stronger than generic tech mentions. Detected
+# deterministically in page text and scored as the top-weight signal.
+BUYING_SIGNAL_PHRASES = (
+    "legacy system", "legacy systems", "legacy infrastructure",
+    "application migration", "app migration",
+    "cloud migration", "cloud transformation",
+    "digital transformation", "digitalization", "digitisation",
+    "technical debt",
+    "modernization", "modernisation", "modernise", "modernize",
+    "lift and shift", "lift & shift",
+    "end of life", "end-of-life",
+    "upgrade infrastructure", "infrastructure upgrade",
+    "migration services", "cloud migration services",
+    "hybrid cloud",
+)
+# Phrase -> shorter label used when the matched sentence is too long.
+_BUYING_SIGNAL_LABELS = {p: p for p in BUYING_SIGNAL_PHRASES}
 
 _PRIORITY_KEYWORDS = (
     "about", "service", "solution", "platform", "product", "technology",
@@ -109,6 +148,87 @@ def _scan_page_emails(text: str) -> list[str]:
         if not m.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
             emails.add(m.lower())
     return sorted(emails)
+
+
+def _rank_email(email: str) -> tuple[int, int, str]:
+    """Classify an email local-part: (priority 0=best, key index, role label).
+
+    Decision-maker addresses (cto@, engineering@, infrastructure@, ...) rank
+    first; functional boxes (sales@, procurement@, ...) second; generic boxes
+    (info@, support@, careers@, ...) last - kept, but marked low priority.
+    """
+    local = email.split("@")[0].lower()
+    for i, key in enumerate(_DECISION_MAKER_KEYS):
+        if key in local:
+            return (0, i, "decision-maker")
+    for i, key in enumerate(_FUNCTIONAL_KEYS):
+        if key in local:
+            return (1, i, key)
+    return (2, 0, "generic")
+
+
+def rank_emails(emails_by_url: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Rank emails (best first), deduped, keeping the first page each was found on.
+
+    Returns [{"email", "priority": high|medium|low, "role", "page_url", "page_title"}].
+    """
+    best: dict[str, dict[str, Any]] = {}
+    for page_url, email in emails_by_url:
+        priority, _idx, role = _rank_email(email)
+        label = ("high", "medium", "low")[priority]
+        prev = best.get(email)
+        if prev is None or _rank_email(email) < _rank_email(prev["email"]):
+            # keep first-seen page for the best priority of this email
+            best[email] = {
+                "email": email,
+                "priority": label,
+                "role": role,
+                "page_url": page_url,
+                "page_title": "",
+            }
+    ranked = sorted(best.values(), key=lambda r: (_rank_email(r["email"]), r["email"]))
+    return ranked
+
+
+def _sentence_with(raw: str, phrase: str) -> str:
+    """First sentence of `raw` containing `phrase` (verbatim), or ''."""
+    for sent in re.split(r"(?<=[.!?])\s+", raw):
+        if phrase in sent.lower():
+            return sent.strip()
+    return ""
+
+
+def _scan_buying_signals(pages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Deterministic scan of crawled page text for explicit buying signals.
+
+    Every match is stored as evidence: text/quote are the verbatim sentence
+    from the page, url + page_title identify the source - nothing fabricated.
+    """
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for page in pages:
+        raw = page.get("text") or ""
+        low = raw.lower()
+        for phrase in BUYING_SIGNAL_PHRASES:
+            if phrase not in low:
+                continue
+            key = (phrase, page["url"])
+            if key in seen:
+                continue
+            seen.add(key)
+            sentence = _sentence_with(raw, phrase)
+            if sentence and len(sentence) > 260:
+                sentence = sentence[:257].rsplit(" ", 1)[0] + "…"
+            found.append(
+                {
+                    "type": "buying_signal",
+                    "text": sentence or f"{phrase} (mentioned on page)",
+                    "url": page["url"],
+                    "quote": sentence or "",
+                    "page_title": page.get("title", ""),
+                }
+            )
+    return found
 
 
 # --- Multi-page crawl ---------------------------------------------------------
@@ -229,8 +349,8 @@ def _match_quote(text: str, finding: str) -> str:
 
 # --- Per-page LLM analysis ----------------------------------------------------
 
-def _analyze_page(url: str, text: str, prompt: str) -> dict[str, Any]:
-    """Gemma analysis of ONE page's text -> {'summary': str, 'evidence': [...]}.
+def _analyze_page(url: str, text: str, prompt: str, page_title: str = "") -> dict[str, Any]:
+    """LLM analysis of ONE page's text -> {'summary': str, 'evidence': [...]}.
 
     The LLM never provides URLs or quotes: the URL is this page's URL and the
     quote is matched verbatim from `text` in Python.
@@ -243,27 +363,46 @@ def _analyze_page(url: str, text: str, prompt: str) -> dict[str, Any]:
         + f"\n\nPage URL: {url}\n\nPAGE TEXT (trimmed to {MAX_PAGE_TEXT} chars):\n\n"
         + text[:MAX_PAGE_TEXT]
     )
-    reply = chat(
+    data = chat_json(
         system="You are a meticulous research extraction engine. Follow the goal exactly.",
         user=user,
         max_tokens=500,
     )
-    data = parse_json(reply)
 
     evidence: list[dict[str, Any]] = []
     for pp in data.get("pain_points", []) or []:
         if isinstance(pp, str) and pp.strip():
             evidence.append(
-                {"type": "pain_point", "text": pp.strip(), "url": url, "quote": _match_quote(text, pp)}
+                {
+                    "type": "pain_point",
+                    "text": pp.strip(),
+                    "url": url,
+                    "quote": _match_quote(text, pp),
+                    "page_title": page_title,
+                }
             )
     for pm in data.get("product_mentions", []) or []:
         if isinstance(pm, str) and pm.strip():
             evidence.append(
-                {"type": "product_mention", "text": pm.strip(), "url": url, "quote": _match_quote(text, pm)}
+                {
+                    "type": "product_mention",
+                    "text": pm.strip(),
+                    "url": url,
+                    "quote": _match_quote(text, pm),
+                    "page_title": page_title,
+                }
             )
     summary = str(data.get("summary", "") or "").strip()
     if summary:
-        evidence.append({"type": "summary", "text": summary, "url": url, "quote": _match_quote(text, summary)})
+        evidence.append(
+            {
+                "type": "summary",
+                "text": summary,
+                "url": url,
+                "quote": _match_quote(text, summary),
+                "page_title": page_title,
+            }
+        )
 
     if not evidence:
         raise RuntimeError(f"LLM found no usable findings on {url}")
@@ -313,6 +452,9 @@ def _finalize(
     for _page_url, res in page_results:
         evidence.extend(res.get("evidence", []))
 
+    # Deterministic explicit buying-signal scan over every crawled page.
+    evidence.extend(_scan_buying_signals(pages))
+
     seen: set[tuple[str, str]] = set()
     uniq: list[dict[str, Any]] = []
     for ev in evidence:
@@ -325,27 +467,45 @@ def _finalize(
     pain_points = [e["text"] for e in evidence if e["type"] == "pain_point"]
     product_mentions = [e["text"] for e in evidence if e["type"] == "product_mention"]
     summaries = [e["text"] for e in evidence if e["type"] == "summary"]
+    buying_signals = [e["text"] for e in evidence if e["type"] == "buying_signal"]
 
-    contact_emails = sorted({email for _u, email in emails_by_url})
-    for page_url, email in emails_by_url:
-        evidence.append({"type": "email", "text": email, "url": page_url, "quote": ""})
+    # Ranked emails: decision-makers first, generics kept as low priority.
+    title_by_url = {p["url"]: p.get("title", "") for p in pages}
+    ranked = rank_emails(emails_by_url)
+    for r in ranked:
+        r["page_title"] = title_by_url.get(r["page_url"], "")
+    contact_emails = [r["email"] for r in ranked]
+    for r in ranked:
+        evidence.append(
+            {
+                "type": "email",
+                "text": r["email"],
+                "url": r["page_url"],
+                "quote": "",
+                "page_title": r["page_title"],
+                "email_priority": r["priority"],
+                "email_role": r["role"],
+            }
+        )
 
     return {
         "mission": pages[0].get("title", "") if pages else "",
         "summary": summaries[0] if summaries else "",
         "pain_points": pain_points,
         "contact_emails": contact_emails,
+        "contact_emails_ranked": ranked,
         "product_mentions": product_mentions,
+        "buying_signals": buying_signals,
         "pages_crawled": [p["url"] for p in pages],
         "evidence": evidence,
         "extractor": extractor,
     }
 
 
-def _stack_signal_evidence(lead: dict[str, Any], homepage: str) -> list[dict[str, Any]]:
+def _stack_signal_evidence(lead: dict[str, Any], homepage: str, homepage_title: str = "") -> list[dict[str, Any]]:
     """TheirStack detections -> citable evidence entries (source = company site).
 
-    These are real detections of legacy/hybrid/cloud tech that the page text may
+    These are real detections of legacy/cloud tech that the page text may
     never mention, so they get their own evidence type with an empty quote.
     """
     hits = [
@@ -353,7 +513,7 @@ def _stack_signal_evidence(lead: dict[str, Any], homepage: str) -> list[dict[str
         if isinstance(t, str) and any(k in t.lower() for k in _STACK_SIGNAL_HINTS)
     ]
     return [
-        {"type": "stack_signal", "text": f"runs {t}", "url": homepage, "quote": ""}
+        {"type": "stack_signal", "text": f"runs {t}", "url": homepage, "quote": "", "page_title": homepage_title}
         for t in hits[:20]
     ]
 
@@ -380,7 +540,7 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
         extractor = "bs4+gemma"
         try:
             home_text = _scrapegraphai_render(url)
-            home_analysis = _analyze_page(url, home_text, prompt)
+            home_analysis = _analyze_page(url, home_text, prompt, page_title=pages[0].get("title", ""))
             extractor = "scrapegraphai+bs4+gemma"
         except Exception as exc:
             print(f"[researcher] ScrapeGraphAI unavailable for {url} ({exc}); trying BS4+LLM.")
@@ -391,12 +551,22 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
                 page_results.append((page["url"], home_analysis))
                 continue
             try:
-                page_results.append((page["url"], _analyze_page(page["url"], page["text"], prompt)))
+                page_results.append(
+                    (page["url"], _analyze_page(page["url"], page["text"], prompt, page_title=page.get("title", "")))
+                )
             except Exception as exc2:
                 print(f"[researcher] BS4+LLM failed for {page['url']} ({exc2}); raw fallback for this page.")
                 summary = page["meta"] or page["title"]
                 evidence = (
-                    [{"type": "summary", "text": summary, "url": page["url"], "quote": page["meta"]}]
+                    [
+                        {
+                            "type": "summary",
+                            "text": summary,
+                            "url": page["url"],
+                            "quote": page["meta"],
+                            "page_title": page.get("title", ""),
+                        }
+                    ]
                     if summary
                     else []
                 )
@@ -420,7 +590,15 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
         for page in pages:
             summary = page["meta"] or page["title"]
             evidence = (
-                [{"type": "summary", "text": summary, "url": page["url"], "quote": page["meta"]}]
+                [
+                    {
+                        "type": "summary",
+                        "text": summary,
+                        "url": page["url"],
+                        "quote": page["meta"],
+                        "page_title": page.get("title", ""),
+                    }
+                ]
                 if summary
                 else []
             )
@@ -428,7 +606,8 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
         findings = _finalize(url, pages, page_results, emails_by_url, "bs4-fallback")
 
     # Quality gate: status=researched must mean REAL content exists.
-    findings["evidence"].extend(_stack_signal_evidence(lead, url))
+    homepage_title = pages[0].get("title", "") if pages else ""
+    findings["evidence"].extend(_stack_signal_evidence(lead, url, homepage_title))
     signal_count = sum(
         1 for e in findings["evidence"] if e["type"] in ("pain_point", "product_mention", "summary")
     )

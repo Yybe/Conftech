@@ -101,9 +101,15 @@
               <td class="px-4 py-3">
                 <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
               </td>
-              <td class="px-4 py-3 font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</td>
-              <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>
-            </tr>
+              <td class="px-4 py-3">
+                <div class="font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</div>
+                {% set sd = lead.scraped_data or {} %}
+                {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+                {% if conf is not none %}
+                <div class="text-[10px] font-semibold text-sky-400">{{ conf }}% conf</div>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>            </tr>
             {% endfor %}
           </tbody>
         </table>

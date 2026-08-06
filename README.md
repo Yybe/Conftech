@@ -9,8 +9,8 @@ before it exists.
 ```
 ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
 │  Prospector │──▶│    Deep      │──▶│   Scorer     │──▶│  Ghostwriter │
-│ TheirStack  │   │  Researcher  │   │  Gemma-4 via │   │  Gemma-4 via │
-│   + Serper  │   │ ScrapeGraphAI│   │   OpenRouter │   │   OpenRouter │
+│ TheirStack  │   │  Researcher  │   │  DeepSeek V4 │   │  DeepSeek V4 │
+│   + Serper  │   │ ScrapeGraphAI│   │  Flash→MiMo  │   │  Flash→MiMo  │
 └─────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
       │                  │                  │                  │
       ▼                  ▼                  ▼                  ▼
@@ -21,6 +21,16 @@ before it exists.
                                               ▼
                                     outreach_drafts (emails)
 ```
+
+LLM routing: every agent call tries **DeepSeek V4 Flash Free** first
+(`deepseek-v4-flash-free`) on the OpenCode Zen gateway (`https://opencode.ai/zen/v1`)
+and automatically retries with **MiMo V2.5 Free** (`mimo-v2.5-free`) on failure,
+rate limit, empty reply, or invalid JSON. Hidden reasoning is disabled
+(`reasoning_effort: "none"` — DeepSeek V4 is a reasoning model and would
+otherwise burn its token budget on `reasoning_content` before answering);
+override with `LLM_MODEL` / `LLM_FALLBACK_MODEL` in `.env`, re-enable reasoning
+with `LLM_REASONING_EFFORT=low|medium|high`, or switch the gateway with
+`OPENROUTER_BASE_URL`.
 
 ## Status flow
 
@@ -34,16 +44,43 @@ raw → researched → pending_review → approved → drafted
 | Module | Role |
 |---|---|
 | `database.py` | Supabase persistence (service-role client), schema bootstrap, CRUD |
-| `prospector.py` | TheirStack (tech-filtered company search) + Serper (email/LinkedIn enrichment) → `raw` |
-| `researcher.py` | 3-tier web crawl → `scraped_data` → `researched`: **1)** ScrapeGraphAI (real browser rendering) **2)** BS4 + Gemma analysis **3)** BS4 raw |
-| `scorer.py` | Gemma-4 via OpenRouter: `fit_score` (1–100) + reasoning → `pending_review` |
-| `ghostwriter.py` | Gemma-4 cold email for **approved** leads → `outreach_drafts` → `drafted` |
+| `prospector.py` | TheirStack (tech-filtered company search) + Serper (email/LinkedIn enrichment) → `raw`; **filters out poor cold-outreach targets** (public sector / defense / 10k+ employee enterprises / public listings) from public metadata; saves `company_profile` |
+| `researcher.py` | 3-tier web crawl → `scraped_data` → `researched`: **1)** ScrapeGraphAI (real browser rendering) **2)** BS4 + LLM analysis **3)** BS4 raw. **Ranks contact emails** (decision-maker first), attaches page titles to every evidence item, and **detects explicit buying signals** in page text |
+| `scorer.py` | DeepSeek V4 Flash → MiMo V2.5 Free via OpenCode Zen: `fit_score` (1–100) + reasoning + **deterministic `confidence_score`** + **top reasons** + evidence citations → `pending_review` |
+| `ghostwriter.py` | DeepSeek V4 Flash → MiMo V2.5 Free cold email for **approved** leads → `outreach_drafts` → `drafted` |
 | `webapp.py` | FastAPI web UI (dashboard / leads / drafts) + JSON API; agents run in BackgroundTasks |
 | `app.py` | CLI + server; human `review_leads()`; `watch` trigger loop |
-| `llm.py` | Shared OpenRouter helper + robust JSON parsing |
+| `llm.py` | Shared LLM gateway helper (OpenCode Zen, primary → fallback model chain) + robust JSON parsing |
 | `cache.py` | Disk JSON cache with TTL (TheirStack 14d, Serper 30d, pages 30d) |
 | `scrapegraphai_compat.py` | Patches `ChatOllama` back into langchain-community 0.4+ (removed there) |
 | `prompts/*.md` | All LLM prompts (never embedded in Python) |
+
+## Lead quality features
+
+- **Company filtering** — companies are classified from public TheirStack
+  metadata (employee count/range, public listing, industry, description,
+  tags, domain) before they enter the pipeline. Public-sector/defense domains
+  and descriptions, and 10,000+ employee enterprises are excluded entirely;
+  publicly-traded and government-adjacent companies are kept but penalized at
+  scoring (`company_profile.segment` → `scorer._SEGMENT_PENALTY`). No company
+  names are hardcoded.
+- **Ranked contacts** — emails are ranked decision-maker first
+  (`cto@`, `engineering@`, `infrastructure@`, `security@`, `devops@`, ...),
+  then functional (`sales@`, `procurement@`, ...), then generic (`info@`,
+  `support@`, `careers@`). Generics are stored but tagged low priority.
+- **Confidence score** — deterministic 0–100 computed from measurable factors:
+  pages crawled, evidence volume, share of evidence with verbatim quotes, tech
+  detections, structured info depth, cross-page consistency, buying signals,
+  and extractor tier. Never an LLM guess.
+- **Top reasons** — a strongest-first "why this lead" list, each reason backed
+  by source URL, verbatim quote, and page title, clickable in the UI.
+- **Buying signals** — explicit phrases on the site (`cloud migration`,
+  `legacy system`, `technical debt`, `modernization`, `hybrid cloud`, ...) are
+  detected deterministically, stored as `buying_signal` evidence, and given
+  significant positive weight in both LLM and fallback scoring.
+- **Source links everywhere** — every insight rendered in the UI links to the
+  page it came from, with quote + title. Invented citations are dropped by URL
+  validation.
 
 ## Setup
 
@@ -128,12 +165,14 @@ curl localhost:8000/api/drafts
 Supabase (project `mnjlrpkpldgpxdwtqdaj`, region ap-southeast-2).
 
 - **leads**: `id (uuid)`, `company_name`, `website`, `target_product`, `tech_stack (jsonb)`,
-  `contact_email`, `fit_score (int)`, `reasoning (text)`, `status` (default
-  `pending_review`), `source`, `scraped_data (jsonb)`, `created_at`
+  `contact_email`, `fit_score (int)`, `confidence_score (int)`, `reasoning (text)`, `status` (default
+  `pending_review`), `source`, `scraped_data (jsonb)`, `company_profile (jsonb)`, `created_at`
 - **outreach_drafts**: `id (uuid)`, `lead_id (fk -> leads, cascade)`, `subject`,
   `email_body`, `created_at`
 
-Schema is created by `python app.py init-db`, which tries in order:
+Schema is created by `python app.py init-db` (re-run after an upgrade — the
+`alter table ... add column if not exists` statements add the new columns to
+existing databases), which tries in order:
 1. **Management API** — set `SUPABASE_ACCESS_TOKEN=sb_pat_...` in `.env` (Dashboard → Account → Access Tokens)
 2. **HTTP `/pg/query`** — legacy endpoint (disabled on many newer projects)
 3. Falls back to printing the SQL — paste `schema.sql` into the Dashboard → SQL Editor → Run
@@ -144,13 +183,16 @@ Schema is created by `python app.py init-db`, which tries in order:
 - The code uses the **service-role** key — backend-only; never ship it to a browser
   client. Add RLS policies if you expose data client-side.
 - TheirStack requires `Authorization: Bearer <key>` — `X-API-KEY` returns 401.
-- `google/gemma-2-9b-it:free` is deprecated (404). Default model is
-  `google/gemma-4-26b-a4b-it:free`, overridable with `LLM_MODEL` in `.env`.
+- LLM model chain: primary `deepseek-v4-flash-free` → fallback
+  `mimo-v2.5-free` (OpenCode Zen gateway, reasoning disabled via
+  `reasoning_effort: "none"`). Override with `LLM_MODEL` /
+  `LLM_FALLBACK_MODEL` / `LLM_REASONING_EFFORT` in `.env`.
 
 ## Roadmap
 
 - [x] Web review UI (dashboard, approve/reject, draft previews) — `python app.py serve`
 - [x] ScrapeGraphAI browser rendering for research (3-tier fallback)
+- [x] Lead quality: company filtering, ranked contacts, confidence score, top reasons, buying signals
 - [ ] Email sending (Resend/SendGrid) + open/reply tracking
 - [ ] Contact email enrichment (paid Serper tier or Hunter/Prospeo)
 - [ ] Deeper scoring signals (job postings, hiring intent, funding events)

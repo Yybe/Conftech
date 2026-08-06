@@ -7,15 +7,22 @@ specific evidence citations drawn from the company's researched website data.
 - `target_product`: the product/service we are selling.
 - `company`: JSON with the company's scraped website intelligence and tech stack.
   `evidence` is a list of researched findings, each with:
-  - `type`: `pain_point` | `stack_signal` | `product_mention` | `summary` | `email`
+  - `type`: `buying_signal` | `pain_point` | `stack_signal` | `product_mention`
+    | `summary` | `email`
   - `text`: the finding
   - `url`: the exact page where it was found
   - `quote`: the verbatim sentence from that page (may be empty for `stack_signal`
     entries, which are technology detections sourced to the company website)
+  - `buying_signal` entries are EXACT phrases from the site (e.g. "cloud
+    migration", "legacy system", "technical debt", "modernization"). They are
+    the strongest evidence of intent — weight them above everything else.
 
 ## Scoring Rubric (1-100)
 - **85-100 (Hot)**: Explicit, strong evidence of the exact pain the target product
   solves; company is actively using a competing/legacy solution we would replace.
+  **Explicit buying signals detected on the site (cloud migration, legacy
+  system, technical debt, modernization, ...) put a lead here when they match
+  the target product.**
 - **65-84 (Warm)**: Clear adjacent fit; pain points align with what the product
   solves, or the company uses technology we integrate with.
 - **40-64 (Lukewarm)**: Partial relevance; some signals but weak evidence of budget or need.

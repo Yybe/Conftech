@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 import database as db
-from llm import chat, load_prompt, parse_json
+from llm import chat_json, load_prompt
 
 GHOSTWRITER_MAX_TOKENS = 450
 
@@ -37,8 +37,7 @@ def ghostwrite_for_lead(lead: dict[str, Any]) -> dict[str, Any]:
         indent=2,
     )
 
-    reply = chat(load_prompt("ghostwriter.md"), user, max_tokens=GHOSTWRITER_MAX_TOKENS)
-    result = parse_json(reply)
+    result = chat_json(load_prompt("ghostwriter.md"), user, max_tokens=GHOSTWRITER_MAX_TOKENS)
 
     subject = str(result.get("subject", "")).strip()
     body = str(result.get("email_body", "")).strip()

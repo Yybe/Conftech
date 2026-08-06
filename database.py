@@ -36,19 +36,25 @@ SCHEMA_SQL = """
 create extension if not exists "pgcrypto";
 
 create table if not exists public.leads (
-    id             uuid primary key default gen_random_uuid(),
-    company_name   text not null,
-    website        text,
-    target_product text,
-    tech_stack     jsonb not null default '[]'::jsonb,
-    contact_email  text,
-    fit_score      integer,
-    reasoning      text,
-    status         text not null default 'pending_review',
-    source         text,
-    scraped_data   jsonb not null default '{}'::jsonb,
-    created_at     timestamptz not null default now()
+    id               uuid primary key default gen_random_uuid(),
+    company_name     text not null,
+    website          text,
+    target_product   text,
+    tech_stack       jsonb not null default '[]'::jsonb,
+    contact_email    text,
+    fit_score        integer,
+    confidence_score integer,
+    reasoning        text,
+    status           text not null default 'pending_review',
+    source           text,
+    scraped_data     jsonb not null default '{}'::jsonb,
+    company_profile  jsonb not null default '{}'::jsonb,
+    created_at       timestamptz not null default now()
 );
+
+-- Idempotent upgrade for databases created before these columns existed.
+alter table public.leads add column if not exists confidence_score integer;
+alter table public.leads add column if not exists company_profile jsonb not null default '{}'::jsonb;
 
 create index if not exists leads_status_idx on public.leads (status);
 
@@ -190,6 +196,7 @@ def insert_lead(
     source: str = "theirstack",
     target_product: str | None = None,
     contact_email: str | None = None,
+    company_profile: dict | None = None,
 ) -> dict[str, Any]:
     """Insert a lead; if a lead with the same website exists, return it unchanged
     (dedupe). Returns the lead row dict."""
@@ -209,6 +216,8 @@ def insert_lead(
         "status": RAW,
         "target_product": target_product,
     }
+    if company_profile:
+        row["company_profile"] = company_profile
     if contact_email:
         row["contact_email"] = contact_email
 
@@ -253,7 +262,8 @@ def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
     """Update arbitrary columns; silently ignores unknown keys."""
     allowed = {
         "company_name", "website", "target_product", "tech_stack", "contact_email",
-        "fit_score", "reasoning", "status", "source", "scraped_data",
+        "fit_score", "confidence_score", "reasoning", "status", "source",
+        "scraped_data", "company_profile",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
