@@ -80,5 +80,49 @@
       </div>
     </main>
   </div>
+
+  {# ---------- Pipeline job progress banner (global, polls /api/job/status) ---------- #}
+  <div id="job-banner" class="fixed bottom-4 left-1/2 z-50 hidden w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 rounded-xl border border-indigo-600/40 bg-slate-900/95 px-4 py-3 shadow-2xl shadow-slate-950/60 backdrop-blur">
+    <div class="flex items-center gap-3">
+      <svg id="job-spinner" class="h-5 w-5 shrink-0 animate-spin text-indigo-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+      <div class="min-w-0 flex-1">
+        <div id="job-title" class="truncate text-sm font-semibold text-slate-100">Pipeline running…</div>
+        <div id="job-stage" class="truncate text-xs text-slate-400">Starting</div>
+      </div>
+      <a href="/leads" class="shrink-0 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700/60">View leads</a>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var banner = document.getElementById('job-banner');
+    if (!banner) return;
+    var titleEl = document.getElementById('job-title');
+    var stageEl = document.getElementById('job-stage');
+    var spinnerEl = document.getElementById('job-spinner');
+    function poll() {
+      fetch('/api/job/status', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s && s.running) {
+            banner.classList.remove('hidden');
+            titleEl.textContent = 'Pipeline: ' + (s.target_product || '…');
+            stageEl.textContent = s.stage_label + (s.message ? ' — ' + s.message : '');
+          } else if (s && s.error) {
+            banner.classList.remove('hidden');
+            spinnerEl.classList.add('hidden');
+            titleEl.textContent = 'Pipeline failed';
+            stageEl.textContent = s.error;
+          } else {
+            banner.classList.add('hidden');
+            spinnerEl.classList.remove('hidden');
+          }
+        })
+        .catch(function () { /* server restarting; keep polling */ });
+    }
+    poll();
+    setInterval(poll, 3000);
+  })();
+  </script>
 </body>
 </html>

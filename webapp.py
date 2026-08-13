@@ -91,17 +91,63 @@ def _normalize_draft(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# --- Pipeline job tracking (in-memory; single-user local tool) ----------------
+# The UI polls /api/job/status so the user can see what the background
+# pipeline run is doing instead of staring at a blank redirect.
+
+_JOB_STATE: dict[str, Any] = {"running": False}
+
+
+def _job_start(target_product: str, limit: int) -> None:
+    _JOB_STATE.clear()
+    _JOB_STATE.update(
+        {
+            "running": True,
+            "target_product": target_product,
+            "limit": limit,
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "stage": "prospecting",
+            "stage_label": "Finding companies",
+            "message": "",
+            "leads_found": 0,
+            "error": None,
+        }
+    )
+
+
+def _job_update(stage: str, stage_label: str, **extra: Any) -> None:
+    _JOB_STATE["stage"] = stage
+    _JOB_STATE["stage_label"] = stage_label
+    _JOB_STATE.update(extra)
+
+
+def _job_finish(error: str | None = None) -> None:
+    _JOB_STATE["running"] = False
+    _JOB_STATE["finished_at"] = datetime.now().isoformat()
+    _JOB_STATE["error"] = error
+
+
 def _run_pipeline_bg(target_product: str, limit: int) -> None:
     from prospector import prospect
     from researcher import research
     from scorer import score
 
+    _job_start(target_product, limit)
     try:
+        _job_update("prospecting", "Finding companies")
         leads = prospect(target_product, limit=limit)
+        _job_update("prospecting", "Finding companies", leads_found=len(leads))
+        if not leads:
+            _job_update("prospecting", "Finding companies", message="No new leads found")
+        _job_update("researching", "Deep-researching websites")
         research(limit=len(leads) or 10)
+        _job_update("scoring", "Scoring fit")
         score(limit=len(leads) or 10)
+        _job_finish()
         print(f"[web] pipeline done: {db.count_by_status()}")
     except Exception as exc:
+        _job_finish(error=str(exc))
         print(f"[web] pipeline job failed: {exc}")
 
 
@@ -136,6 +182,13 @@ def build_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         counts = db.count_by_status()
+        # Per-product totals + pending_review counts for the dashboard grid.
+        products = db.list_target_products()
+        pending_by_product: dict[str, int] = {}
+        if products:
+            for r in db.list_leads(status=db.PENDING_REVIEW, limit=1000):
+                name = r.get("target_product") or "Untagged"
+                pending_by_product[name] = pending_by_product.get(name, 0) + 1
         recent_leads: list[dict[str, Any]] = []
         for s in (db.PENDING_REVIEW, db.APPROVED, db.DRAFTED, db.RAW, db.RESEARCHED):
             for lead in db.get_leads_by_status(s, limit=4):
@@ -147,6 +200,8 @@ def build_app() -> FastAPI:
             "dashboard.html",
             {
                 "counts": counts,
+                "products": products,
+                "pending_by_product": pending_by_product,
                 "recent_leads": recent_leads[:8],
                 "recent_drafts": recent_drafts,
                 "active": "dashboard",
@@ -160,11 +215,15 @@ def build_app() -> FastAPI:
         request: Request,
         status: str | None = None,
         min_score: int | None = None,
+        target_product: str | None = None,
     ):
-        leads = db.list_leads(status=status, min_score=min_score, limit=100)
+        leads = db.list_leads(
+            status=status, min_score=min_score, target_product=target_product, limit=200
+        )
         # Best-fit first: scored leads sorted by fit_score desc, unscored at the bottom.
         leads.sort(key=lambda l: (l.get("fit_score") is None, l.get("fit_score") or 0), reverse=True)
         counts = db.count_by_status()
+        products = db.list_target_products()
         notice = request.query_params.get("notice", "")
         return templates.TemplateResponse(
             request,
@@ -172,8 +231,11 @@ def build_app() -> FastAPI:
             {
                 "leads": leads,
                 "counts": counts,
+                "products": list(products.keys()),
+                "leads_by_product": products,
                 "current_status": status,
                 "min_score": min_score,
+                "target_product": target_product,
                 "notice": notice,
                 "active": "leads",
             },
@@ -260,10 +322,18 @@ def build_app() -> FastAPI:
         return {"job": "started", "target_product": req.target_product, "limit": req.limit}
 
     @app.get("/api/leads")
-    def api_leads(status: str | None = None, limit: int = 50):
+    def api_leads(status: str | None = None, target_product: str | None = None, limit: int = 50):
         if status:
-            return db.get_leads_by_status(status, limit=limit)
-        return db.list_leads(limit=limit)
+            leads = db.get_leads_by_status(status, limit=limit)
+        else:
+            leads = db.list_leads(status=None, target_product=target_product, limit=limit)
+        if target_product:
+            leads = [l for l in leads if l.get("target_product") == target_product]
+        return leads
+
+    @app.get("/api/job/status")
+    def api_job_status():
+        return dict(_JOB_STATE)
 
     @app.get("/api/leads/{lead_id}")
     def api_get_lead(lead_id: str):

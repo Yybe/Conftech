@@ -11,6 +11,9 @@
     {% if current_status %}
     <input type="hidden" name="status" value="{{ current_status }}">
     {% endif %}
+    {% if target_product %}
+    <input type="hidden" name="target_product" value="{{ target_product }}">
+    {% endif %}
     <input
       type="number"
       name="min_score"
@@ -21,11 +24,31 @@
       class="w-36 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30"
     >
     <button type="submit" class="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-700/60">Filter</button>
-    {% if current_status or min_score %}
+    {% if current_status or min_score or target_product %}
     <a href="/leads" class="rounded-lg px-3 py-2 text-sm text-slate-400 hover:text-slate-200">Clear</a>
     {% endif %}
   </form>
 </div>
+
+{# ---------- Product tabs ---------- #}
+{% if products %}
+<div class="mt-5">
+  <div class="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Target product</div>
+  <div class="mt-2 flex flex-wrap gap-2">
+    {% set all_count = counts.values()|sum %}
+    <a href="/leads{% if current_status %}?status={{ current_status }}{% endif %}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if not target_product else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
+      All products <span class="ml-1 text-xs opacity-70">{{ all_count }}</span>
+    </a>
+    {% for p in products %}
+    {% set href = '/leads?target_product=' ~ p|urlencode %}
+    {% if current_status %}{% set href = href ~ '&status=' ~ current_status %}{% endif %}
+    <a href="{{ href }}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if target_product == p else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
+      {{ p }} <span class="ml-1 text-xs opacity-70">{{ leads_by_product.get(p, 0) }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 {% if notice == 'started' %}
 <div class="mt-5 flex items-center gap-3 rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
@@ -118,7 +141,7 @@
   <div class="px-4 py-16 text-center">
     <div class="text-sm font-medium text-slate-300">No leads here</div>
     <p class="mt-1 text-sm text-slate-500">
-      {% if current_status or min_score %}
+      {% if current_status or min_score or target_product %}
       Try a different filter, or <a href="/leads" class="text-indigo-400 hover:text-indigo-300">clear filters</a>.
       {% else %}
       Run the pipeline from the dashboard to find your first prospects.

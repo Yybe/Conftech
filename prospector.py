@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
 from typing import Any
 
 import requests
@@ -77,6 +78,20 @@ _SERVICE_PROVIDER_PHRASES = (
     "data center services", "data centre services", "colocation",
     "internet service provider", "isp services",
     "hosting provider", "web hosting company",
+    # Cybersecurity / compliance providers - sell what a "Cybersecurity &
+    # Compliance" service sells, never buyers of it.
+    "cybersecurity company", "cybersecurity services", "cyber security services",
+    "cybersecurity consulting", "cyber security consulting",
+    "managed security", "mssp", "managed security service provider",
+    "security operations center", "soc as a service", "soc services",
+    "security monitoring services", "managed detection and response",
+    "penetration testing", "pentest", "offensive security", "red team",
+    "security consulting", "information security consulting",
+    "compliance consulting", "compliance services",
+    "iso 27001 consulting", "gdpr consulting", "hipaa consulting",
+    "data privacy consulting", "data protection consulting",
+    "identity and access management solutions", "iam solutions",
+    "identity management solutions", "access management solutions",
 )
 
 _DOMAIN_EXCLUDE_ENDINGS = (".gov", ".mil")
@@ -91,6 +106,8 @@ _PROVIDER_INDUSTRY_PHRASES = (
     "outsourcing and offshoring consulting",
     "it system custom software development",
     "software development",
+    "computer and network security",
+    "security and investigations",
 )
 
 
@@ -247,6 +264,115 @@ def extract_emails(text: str) -> list[str]:
     return sorted(seen)
 
 
+# --- Serper fallback discovery (when TheirStack credits are exhausted) --------
+#
+# Google SERP cannot match structured tech stacks the way TheirStack does, so
+# this is a lower-precision path: it extracts LinkedIn company pages for
+# BUYER-indicator queries (industry + "family owned"/"founded in", never the
+# service topic itself, which only surfaces providers), then resolves each
+# company's real website domain so research/score can still crawl it. The
+# provider filter runs on whatever metadata we got (name, domain, snippet).
+
+def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
+    """Discovery-only fallback. Returns TheirStack-shaped company dicts
+    (name/domain/linkedin_url/long_description) built from SERP results."""
+    buyer_indicators = ["family owned", "founded in", "employee owned", "established in"]
+    industries = ["manufacturing", "logistics", "distribution", "wholesale",
+                  "retail", "food and beverage", "healthcare", "pharmaceuticals"]
+    queries: list[str] = []
+    for ind in industries:
+        for hint in buyer_indicators:
+            queries.append(f'site:linkedin.com/company {ind} "{hint}" -staffing -recruiting -consulting')
+    # Cap discovery work: 6 queries x 10 results is plenty for limit leads.
+    queries = queries[:6]
+
+    seen_slugs: set[str] = set()
+    companies: list[dict[str, Any]] = []
+    for q in queries:
+        if len(companies) >= limit * 3:
+            break
+        try:
+            sr = serper_search(q)
+        except Exception as exc:
+            print(f"[prospector] Serper discovery query failed ({q}): {exc}")
+            continue
+        for item in sr.get("organic", []) or []:
+            link = str(item.get("link") or "")
+            if "linkedin.com/company/" not in link:
+                continue
+            slug = link.rstrip("/").split("/company/")[-1].split("?")[0]
+            if not slug or slug.lower() in ("company",) or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            name = (str(item.get("title") or "").split(" | ")[0]
+                    .split(" - ")[0].split(" | LinkedIn")[0].strip())
+            companies.append({
+                "name": name or slug,
+                "domain": "",  # resolved below
+                "linkedin_url": f"https://www.linkedin.com/company/{slug}",
+                "long_description": str(item.get("snippet") or ""),
+                "seo_description": str(item.get("snippet") or ""),
+            })
+
+    # Resolve each company's real website domain (skip social/blog/directory
+    # sites, and reject domains that don't correlate with the company name -
+    # e.g. a Zoominfo/Crunchbase page is NOT the company's own website).
+    resolved: list[dict[str, Any]] = []
+    for co in companies:
+        name = co.get("name") or ""
+        try:
+            sr = serper_search(f'"{name}" official website -linkedin.com -facebook.com -twitter.com -instagram.com')
+        except Exception as exc:
+            print(f"[prospector] Serper domain lookup failed for {name}: {exc}")
+            continue
+        domain = ""
+        for item in sr.get("organic", []) or []:
+            link = str(item.get("link") or "")
+            host = urllib.parse.urlparse(link).netloc.lower()
+            if not host or any(s in host for s in (
+                    "linkedin.com", "facebook.com", "twitter.com", "instagram.com",
+                    "youtube.com", "crunchbase.com", "glassdoor.com", "wikipedia.org",
+                    "zoominfo.com", "dnb.com", "hoovers", "bloomberg.com", "forbes.com",
+                    "buzzfile.com", "bizapedia.com", "data.leadiq.com", "craft.co",
+                    "theorg.com", "rocketreach.co", "apollo.io", "signalhire.com",
+                    "linkedin.cn", "yelp.com", "trustpilot.com")):
+                continue
+            if host.startswith("www."):
+                host = host[4:]
+            domain = host
+            break
+        if not domain:
+            print(f"[prospector] Serper could not resolve domain for {name}; skipping")
+            continue
+        # Reject a resolved domain that has zero textual overlap with the
+        # company name - it's almost certainly a directory/aggregator page
+        # (e.g. "Pillar Manufacturing" resolving to zoominfo.com). Family
+        # names like "Smith & Sons" legitimately diverge, so this is a soft
+        # check: keep if EITHER a name token appears in the domain OR the
+        # domain host itself contains a word from the name.
+        name_words = set(re.findall(r"[a-z0-9]{3,}", name.lower()))
+        host_base = domain.split(".")[0]
+        overlap = name_words & {host_base} or any(w in host_base for w in name_words)
+        # Substring fallback: "bemismfg.com" vs "Bemis Manufacturing".
+        substring_match = any(w and w[:5] in host_base for w in name_words if len(w) >= 5)
+        if not (overlap or substring_match):
+            print(
+                f"[prospector] Domain {domain} does not match company {name!r}; "
+                f"skipping (likely directory page)"
+            )
+            continue
+        co["domain"] = domain
+        resolved.append(co)
+
+    # Dedupe by domain.
+    by_domain: dict[str, dict] = {}
+    for co in resolved:
+        d = (co.get("domain") or "").strip().lower()
+        if d:
+            by_domain.setdefault(d, co)
+    return list(by_domain.values())
+
+
 # --- Query building ---------------------------------------------------------
 
 def build_queries(target_product: str) -> dict[str, list[str]]:
@@ -349,6 +475,16 @@ def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
             by_domain.setdefault(domain, co)
     companies = list(by_domain.values())
     print(f"[prospector] TheirStack returned {len(companies)} unique companies")
+
+    # 1b) Free fallback when TheirStack is unavailable (credits exhausted /
+    #     outage): Serper-based discovery of LinkedIn company pages for
+    #     buyer-indicator queries, with website-domain resolution. Lower
+    #     precision than TheirStack (no tech-stack matching), so the quality
+    #     filter + research/score still gate what enters the pipeline.
+    if not companies:
+        print("[prospector] TheirStack gave nothing; trying Serper fallback discovery.")
+        companies = _serper_discover(target_product, limit)
+        print(f"[prospector] Serper fallback returned {len(companies)} companies")
 
     # Quality filter: drop poor cold-outreach targets (enterprise / public
     # sector / defense) BEFORE they enter the pipeline - metadata-based, no

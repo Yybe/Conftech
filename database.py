@@ -246,16 +246,37 @@ def get_leads_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
 def list_leads(
     status: str | None = None,
     min_score: int | None = None,
+    target_product: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """List leads with optional status / fit-score filters (for the web UI)."""
+    """List leads with optional status / fit-score / target-product filters."""
     query = get_client().table("leads").select("*").order("created_at", desc=True)
     if status:
         query = query.eq("status", status)
     if min_score is not None:
         query = query.gte("fit_score", min_score)
+    if target_product:
+        query = query.eq("target_product", target_product)
     res = query.limit(limit).execute()
     return list(res.data)
+
+
+def list_target_products() -> dict[str, int]:
+    """Distinct target products with a lead count each, most-leads first."""
+    res = (
+        get_client()
+        .table("leads")
+        .select("target_product")
+        .neq("target_product", "")
+        .execute()
+    )
+    counts: dict[str, int] = {}
+    for row in res.data or []:
+        name = row.get("target_product") or "Untagged"
+        counts[name] = counts.get(name, 0) + 1
+    return dict(
+        sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    )
 
 
 def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:

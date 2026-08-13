@@ -70,6 +70,30 @@
   </div>
 </section>
 
+{# ---------- Products ---------- #}
+<section class="mt-10">
+  <div class="flex items-center justify-between">
+    <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Leads by target product</h2>
+    <a href="/leads" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">View all →</a>
+  </div>
+  <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {% for p in products %}
+    <a href="/leads?target_product={{ p|urlencode }}" class="group rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition hover:border-indigo-500/40 hover:bg-slate-900">
+      <div class="flex items-center justify-between gap-2">
+        <span class="truncate text-sm font-semibold text-slate-200 group-hover:text-indigo-300">{{ p }}</span>
+        <span class="shrink-0 rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-bold text-indigo-300">{{ products.get(p, 0) }}</span>
+      </div>
+      <div class="mt-2 text-xs text-slate-500">pending review: {{ pending_by_product.get(p, 0) }}</div>
+    </a>
+    {% endfor %}
+    {% if not products %}
+    <div class="rounded-xl border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500 sm:col-span-2 lg:col-span-3">
+      No leads yet. Run the pipeline above to create your first product campaign.
+    </div>
+    {% endif %}
+  </div>
+</section>
+
 {# ---------- Recent activity ---------- #}
 <section class="mt-10 grid gap-8 lg:grid-cols-5">
   <div class="lg:col-span-3">
