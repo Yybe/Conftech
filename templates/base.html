@@ -19,103 +19,73 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="h-full bg-slate-950 font-sans text-slate-100 antialiased">
-  <div class="flex min-h-screen">
-    {# ---------- Sidebar ---------- #}
-    <aside class="flex w-64 shrink-0 flex-col border-r border-slate-800/80 bg-slate-900/40">
-      <div class="flex h-16 items-center gap-2.5 border-b border-slate-800/80 px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-950/40">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="height:18px;width:18px">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-          </svg>
-        </div>
-        <div>
-          <div class="text-sm font-bold tracking-tight text-white">Conftech</div>
-          <div class="text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">Lead Intelligence</div>
-        </div>
-      </div>
-
-      <nav class="flex-1 space-y-1 px-3 py-4">
-        <a href="/" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'dashboard' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
-          Dashboard
-        </a>
-        <a href="/leads" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'leads' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-          Leads
-        </a>
-        <a href="/drafts" class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition {{ 'bg-indigo-500/15 text-indigo-300' if active == 'drafts' else 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200' }}">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path></svg>
-          Drafts
-        </a>
+<body class="h-full bg-[#0b101b] font-sans text-slate-200 antialiased">
+  {# ---------- Top bar (replaces the sidebar: text-led, flat, data-dense) ---------- #}
+  <header class="topbar">
+    <div class="mx-auto flex h-full max-w-7xl items-center gap-7 px-6">
+      <a href="/" class="flex shrink-0 items-center gap-2.5">
+        <span class="flex h-6 w-6 items-center justify-center rounded-md" style="background:var(--accent-strong)">
+          <svg class="h-3.5 w-3.5" style="color:var(--accent-ink)" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        </span>
+        <span class="text-[15px] font-bold tracking-tight text-slate-50">Conftech</span>
+        <span class="hidden text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 lg:inline">Lead Intelligence</span>
+      </a>
+      <nav class="flex items-center gap-7">
+        <a href="/" class="navlink {{ 'is-active' if active == 'dashboard' else '' }}">Dashboard</a>
+        <a href="/leads" class="navlink {{ 'is-active' if active == 'leads' else '' }}">Leads</a>
+        <a href="/drafts" class="navlink {{ 'is-active' if active == 'drafts' else '' }}">Drafts</a>
       </nav>
-
-      <div class="border-t border-slate-800/80 px-3 py-4">
-        <div class="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline</div>
-        {% set dot_colors = {
-          'raw': 'bg-slate-500',
-          'researched': 'bg-sky-500',
-          'pending_review': 'bg-amber-500',
-          'approved': 'bg-emerald-500',
-          'rejected': 'bg-rose-500',
-          'drafted': 'bg-violet-500',
-          'error': 'bg-red-500'
-        } %}
-        {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
-        <a href="/leads?status={{ s }}" class="flex items-center justify-between rounded-lg px-3 py-1.5 text-xs transition hover:bg-slate-800/60 {{ 'bg-amber-500/10 font-semibold text-amber-300' if s == 'pending_review' else 'text-slate-400' }}">
-          <span class="flex items-center gap-2.5">
-            <span class="h-1.5 w-1.5 rounded-full {{ dot_colors[s] }}"></span>
-            {{ s|status_label }}
+      <div class="ml-auto flex items-center gap-3">
+        <a href="/leads?status=pending_review" class="chip chip--accent !py-1 !px-2.5" data-reveal>
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style="background:var(--accent)"></span>
+            <span class="relative inline-flex h-1.5 w-1.5 rounded-full" style="background:var(--accent)"></span>
           </span>
-          <span class="rounded-full bg-slate-800 px-2 py-0.5 font-semibold text-slate-300">{{ counts.get(s, 0) }}</span>
+          <span class="text-xs font-bold tabular-nums">{{ counts.get('pending_review', 0) }}</span>
+          <span class="font-medium">pending review</span>
         </a>
-        {% endfor %}
       </div>
-    </aside>
+    </div>
+  </header>
 
-    {# ---------- Main ---------- #}
-    <main class="min-w-0 flex-1">
-      <div class="mx-auto max-w-6xl px-6 py-8 lg:px-10">
-        {% block content %}{% endblock %}
-      </div>
-    </main>
-  </div>
+  <main class="mx-auto max-w-7xl px-6 py-8 lg:py-10">
+    {% block content %}{% endblock %}
+  </main>
 
-  {# ---------- Pipeline job progress banner (global, polls /api/job/status) ---------- #}
-  <div id="job-banner" class="fixed bottom-4 left-1/2 z-50 hidden w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 rounded-xl border border-indigo-600/40 bg-slate-900/95 px-4 py-3 shadow-2xl shadow-slate-950/60 backdrop-blur">
-    <div class="flex items-center gap-3">
-      <svg id="job-spinner" class="h-5 w-5 shrink-0 animate-spin text-indigo-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+  {# ---------- Pipeline job progress banner (global; animated by app.js, polled below) ---------- #}
+  <div class="pointer-events-none fixed bottom-5 left-0 right-0 z-50 flex justify-center px-4">
+    <div id="job-banner" class="flex w-full max-w-xl items-center gap-3 rounded-xl border px-4 py-3 shadow-2xl shadow-black/50"
+         style="border-color:var(--accent-border); background:rgba(15,22,38,0.96); backdrop-filter:blur(10px); opacity:0">
+      <svg id="job-spinner" class="h-5 w-5 shrink-0 animate-spin" style="color:var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
       <div class="min-w-0 flex-1">
         <div id="job-title" class="truncate text-sm font-semibold text-slate-100">Pipeline running…</div>
-        <div id="job-stage" class="truncate text-xs text-slate-400">Starting</div>
+        <div id="job-stage" class="truncate text-xs" style="color:var(--muted)">Starting</div>
       </div>
-      <a href="/leads" class="shrink-0 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700/60">View leads</a>
+      <a href="/leads" class="btn btn--ghost shrink-0" style="padding:6px 12px;font-size:12px">View leads</a>
     </div>
   </div>
 
+  {# Motion (pinned UMD build) + shared interactions, then the job poller #}
+  <script src="https://cdn.jsdelivr.net/npm/motion@11.11.13/dist/motion.js"></script>
+  <script src="/static/app.js"></script>
   <script>
   (function () {
     var banner = document.getElementById('job-banner');
     if (!banner) return;
-    var titleEl = document.getElementById('job-title');
-    var stageEl = document.getElementById('job-stage');
-    var spinnerEl = document.getElementById('job-spinner');
     function poll() {
       fetch('/api/job/status', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(function (s) {
           if (s && s.running) {
-            banner.classList.remove('hidden');
-            titleEl.textContent = 'Pipeline: ' + (s.target_product || '…');
-            stageEl.textContent = s.stage_label + (s.message ? ' — ' + s.message : '');
+            ConftechUI.showJobBanner({
+              title: 'Pipeline: ' + (s.target_product || '…'),
+              stage: s.stage_label + (s.message ? ' — ' + s.message : ''),
+              error: false
+            });
           } else if (s && s.error) {
-            banner.classList.remove('hidden');
-            spinnerEl.classList.add('hidden');
-            titleEl.textContent = 'Pipeline failed';
-            stageEl.textContent = s.error;
+            ConftechUI.showJobBanner({ title: 'Pipeline failed', stage: s.error, error: true });
           } else {
-            banner.classList.add('hidden');
-            spinnerEl.classList.remove('hidden');
+            ConftechUI.hideJobBanner();
           }
         })
         .catch(function () { /* server restarting; keep polling */ });

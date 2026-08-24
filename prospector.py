@@ -384,7 +384,7 @@ def build_queries(target_product: str) -> dict[str, list[str]]:
             chat(
                 load_prompt("prospector.md"),
                 f"Target Product: {target_product}",
-                max_tokens=400,
+                max_tokens=700,
             )
         )
         return {
@@ -394,12 +394,25 @@ def build_queries(target_product: str) -> dict[str, list[str]]:
         }
     except Exception as exc:  # LLM down -> deterministic fallback
         print(f"[prospector] LLM query planning failed ({exc}); using keyword fallback.")
+        # Buyer-first deterministic plan. NEVER use the raw target-product name
+        # as a description pattern: for a service target ("Cloud Migration
+        # Services") that only matches competitor providers. Instead pair
+        # legacy/on-premise infrastructure tech filters (the systems a migration
+        # service REPLACES) with buyer-industry description patterns.
         return {
-            "technology_slugs": [],
-            "description_patterns": [target_product],
+            "technology_slugs": [
+                "vmware-vsphere", "microsoft-hyperv", "oracle-database", "sap",
+                "windows-server", "microsoft-sql-server",
+            ],
+            "description_patterns": [
+                "manufacturing", "logistics", "distribution", "wholesale",
+                "retail chain", "healthcare provider", "family owned",
+                "enterprise resource planning", "on-premise",
+            ],
             "serper_queries": [
-                f'"{target_product}" company site:linkedin.com/company',
-                f'"{target_product}" company',
+                'site:linkedin.com/company manufacturing "erp" "on-premise"',
+                '"family owned" manufacturing "legacy systems"',
+                'logistics OR distribution company "data center"',
             ],
         }
 

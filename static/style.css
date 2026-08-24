@@ -1,23 +1,435 @@
-/* Conftech small custom styles (Tailwind does the heavy lifting) */
+/* ==========================================================================
+   Conftech design system
+   Tailwind handles layout/spacing utilities in templates; this file owns the
+   shared visual language: tokens, status system, scores, panels, buttons.
 
-/* Preserve line breaks in email drafts */
+   System rules:
+   - One accent (sky). Emerald/rose appear ONLY as decision semantics.
+   - Status = pipeline progression, not a rainbow (see .st-* below).
+   - Motion via Motion UMD (see app.js); CSS transitions for hover only.
+   ========================================================================== */
+
+:root {
+  /* surfaces */
+  --bg: #0b101b;
+  --panel: #121b2e;
+  --panel-2: #0e1726;
+  --panel-hover: #16223a;
+  --border: #1e2a41;
+  --border-strong: #2c3c5c;
+
+  /* text */
+  --text: #e2e8f0;
+  --text-strong: #f8fafc;
+  --muted: #94a3b8;
+  --faint: #64748b;
+
+  /* accent — the one deliberate color */
+  --accent: #38bdf8;                       /* sky-400 */
+  --accent-strong: #0ea5e9;                /* sky-500 */
+  --accent-ink: #082f49;                   /* text on accent */
+  --accent-tint: rgba(56, 189, 248, 0.12);
+  --accent-border: rgba(56, 189, 248, 0.35);
+
+  /* semantic — decisions only */
+  --ok: #34d399;                           /* emerald-400 */
+  --ok-ink: #022c22;
+  --ok-tint: rgba(52, 211, 153, 0.12);
+  --warn: #fbbf24;                         /* amber-400 */
+  --warn-tint: rgba(251, 191, 36, 0.12);
+  --bad: #fb7185;                          /* rose-400 */
+  --bad-tint: rgba(251, 113, 133, 0.12);
+  --err: #f87171;                          /* red-400 */
+  --err-tint: rgba(248, 113, 113, 0.12);
+
+  /* shape + motion */
+  --radius: 10px;
+  --radius-lg: 14px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html { color-scheme: dark; }
+body { background: var(--bg); color: var(--text); }
+
+/* --------------------------------------------------------------------------
+   Type scale (Tailwind sizes for layout; these own the system elements)
+   -------------------------------------------------------------------------- */
+.type-heading {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-strong);
+}
+.type-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.type-meta { font-size: 0.75rem; color: var(--faint); }
+
+.score {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.score--md { font-size: 1.25rem; }
+.score--lg { font-size: 1.625rem; }
+.score--xl { font-size: 2.125rem; }
+.score-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* score track bar — fill inherits currentColor from its colored wrapper */
+.track {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  overflow: hidden;
+}
+.track > i {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: var(--p, 0%);
+  border-radius: 999px;
+  background: currentColor;
+  transition: width 400ms var(--ease);
+}
+
+/* --------------------------------------------------------------------------
+   Panels — flat, border-defined. .panel--hero is the ONLY elevated surface.
+   -------------------------------------------------------------------------- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.panel--hero {
+  background: linear-gradient(180deg, #141f36 0%, #111a2c 100%);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.panel--inset {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* --------------------------------------------------------------------------
+   Buttons — flat, one accent, semantic only where a decision is made
+   -------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.625rem 0.9375rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background-color 150ms var(--ease), border-color 150ms var(--ease),
+              color 150ms var(--ease), filter 150ms var(--ease);
+}
+.btn:active { transform: scale(0.97); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn--primary { background: var(--accent-strong); color: var(--accent-ink); }
+.btn--primary:hover { background: var(--accent); }
+.btn--success { background: var(--ok); color: var(--ok-ink); }
+.btn--success:hover { filter: brightness(1.07); }
+.btn--ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.btn--ghost:hover { background: var(--panel-hover); border-color: #3b4d6e; }
+.btn--danger {
+  background: var(--bad-tint);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  color: var(--bad);
+}
+.btn--danger:hover { background: rgba(251, 113, 133, 0.2); }
+.btn[disabled] { opacity: 0.5; pointer-events: none; }
+
+/* --------------------------------------------------------------------------
+   Fields
+   -------------------------------------------------------------------------- */
+.field {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: #0a111f;
+  color: var(--text);
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8125rem;
+  outline: none;
+  transition: border-color 150ms var(--ease), box-shadow 150ms var(--ease);
+}
+.field::placeholder { color: var(--faint); }
+.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+
+/* --------------------------------------------------------------------------
+   Status pills — pipeline system, not a rainbow
+   In-flow (raw -> researched -> pending_review -> drafted): accent hue,
+   fill increases as the lead moves forward. pending_review is the decision
+   point = solid. Outcomes: approved = emerald, rejected/error = rose/red.
+   -------------------------------------------------------------------------- */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.45;
+  padding: 0.1875rem 0.625rem;
+  white-space: nowrap;
+  color: var(--muted);
+  background: transparent;
+}
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.85;
+}
+.st-raw { border-color: #334155; color: var(--faint); }
+.st-researched {
+  background: var(--accent-tint);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.st-pending {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.st-pending::before { background: var(--accent-ink); }
+.st-drafted {
+  background: var(--ok-tint);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  color: var(--ok);
+}
+.st-approved {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--ok-ink);
+  font-weight: 700;
+}
+.st-approved::before { background: var(--ok-ink); }
+.st-rejected {
+  background: var(--bad-tint);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  color: var(--bad);
+}
+.st-error {
+  background: var(--err-tint);
+  border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  color: var(--err);
+}
+
+/* --------------------------------------------------------------------------
+   Chips — small metadata tokens
+   -------------------------------------------------------------------------- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.06);
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.5;
+  padding: 0.125rem 0.5rem;
+  white-space: nowrap;
+}
+.chip a, a.chip { text-decoration: none; }
+.chip--accent { color: var(--accent); border-color: var(--accent-border); background: var(--accent-tint); }
+.chip--ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-tint); }
+.chip--warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-tint); }
+.chip--bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: var(--bad-tint); }
+.chip--err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); background: var(--err-tint); }
+
+/* --------------------------------------------------------------------------
+   Top bar
+   -------------------------------------------------------------------------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: 60px;
+  background: rgba(11, 16, 27, 0.88);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.navlink {
+  display: inline-flex;
+  align-items: center;
+  height: 60px;
+  padding: 0 0.125rem;
+  border-bottom: 2px solid transparent;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  transition: color 150ms var(--ease), border-color 150ms var(--ease);
+}
+.navlink:hover { color: var(--text); }
+.navlink.is-active { color: var(--text-strong); border-bottom-color: var(--accent); }
+
+/* --------------------------------------------------------------------------
+   Pipeline track (lead detail) — position in the flow
+   -------------------------------------------------------------------------- */
+.pipe { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem; }
+.pipe__node {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.pipe__node i {
+  width: 7px; height: 7px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background-color 200ms var(--ease), box-shadow 200ms var(--ease);
+}
+.pipe__node.is-done { color: var(--muted); }
+.pipe__node.is-done i { background: var(--accent); }
+.pipe__node.is-now { color: var(--text-strong); }
+.pipe__node.is-now i {
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.pipe__line { flex: 0 0 22px; height: 1px; background: var(--border-strong); }
+.pipe__line.is-done { background: var(--accent); }
+
+/* --------------------------------------------------------------------------
+   Segmented filter control (leads page)
+   -------------------------------------------------------------------------- */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.seg a {
+  padding: 0.3125rem 0.75rem;
+  border-radius: 7px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: background-color 150ms var(--ease), color 150ms var(--ease);
+}
+.seg a:hover { color: var(--text); }
+.seg a.is-active { background: var(--accent-strong); color: var(--accent-ink); }
+.seg__count { opacity: 0.7; font-weight: 700; margin-left: 0.25rem; }
+.seg a.is-active .seg__count { opacity: 0.85; }
+
+/* --------------------------------------------------------------------------
+   Rows + expanders
+   -------------------------------------------------------------------------- */
+.row-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 150ms var(--ease), background-color 150ms var(--ease);
+}
+.row-card:hover { background: var(--panel); border-color: var(--border-strong); }
+.row-card.is-open { border-color: var(--accent-border); }
+
+.row-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  color: var(--faint);
+  transition: color 150ms var(--ease), background-color 150ms var(--ease);
+}
+.row-toggle:hover { color: var(--text); background: var(--panel-hover); }
+.row-toggle .chev { transition: transform 180ms var(--ease); }
+.row-toggle.is-open .chev { transform: rotate(180deg); }
+
+.expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--ease);
+}
+.expand.is-open { grid-template-rows: 1fr; }
+.expand > .expand__inner { overflow: hidden; min-height: 0; }
+.expand__inner > * {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 180ms var(--ease) 40ms, transform 180ms var(--ease) 40ms;
+}
+.expand.is-open .expand__inner > * { opacity: 1; transform: none; }
+
+/* --------------------------------------------------------------------------
+   Empty states
+   -------------------------------------------------------------------------- */
+.empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--faint);
+}
+
+/* --------------------------------------------------------------------------
+   Motion hooks — hidden until JS reveals (safe fallback: .js-anim is only
+   added by app.js, so a JS failure leaves everything visible)
+   -------------------------------------------------------------------------- */
+.js-anim [data-reveal] { opacity: 0; }
+.js-anim [data-reveal].is-shown { opacity: 1; }
+
+/* Job banner base (visibility animated by app.js) */
+#job-banner { pointer-events: none; }
+#job-banner.is-visible { pointer-events: auto; }
+#job-banner.is-error { border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+#job-banner.is-error #job-spinner { display: none; }
+
+/* --------------------------------------------------------------------------
+   Email draft bodies
+   -------------------------------------------------------------------------- */
 .prose-pre {
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* Subtle dark scrollbars */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2c3c5c; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3b4d6e; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

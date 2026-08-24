@@ -366,7 +366,7 @@ def _analyze_page(url: str, text: str, prompt: str, page_title: str = "") -> dic
     data = chat_json(
         system="You are a meticulous research extraction engine. Follow the goal exactly.",
         user=user,
-        max_tokens=500,
+        max_tokens=1500,
     )
 
     evidence: list[dict[str, Any]] = []

@@ -33,14 +33,18 @@ STATIC_DIR = BASE_DIR / "static"
 
 # --- Presentation helpers (exposed to templates as Jinja2 filters) -----------
 
+# Status pill classes are owned by static/style.css (.st-* modifiers on the
+# .status base class). System: in-flow stages (raw -> researched ->
+# pending_review -> drafted) use the accent hue with increasing fill;
+# outcomes are semantic (approved = emerald, rejected/error = rose/red).
 STATUS_META: dict[str, tuple[str, str]] = {
-    db.RAW: ("Raw", "bg-slate-500/15 text-slate-300 border-slate-500/30"),
-    db.RESEARCHED: ("Researched", "bg-sky-500/15 text-sky-300 border-sky-500/30"),
-    db.PENDING_REVIEW: ("Pending review", "bg-amber-500/15 text-amber-300 border-amber-500/30"),
-    db.APPROVED: ("Approved", "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"),
-    db.REJECTED: ("Rejected", "bg-rose-500/15 text-rose-300 border-rose-500/30"),
-    db.DRAFTED: ("Drafted", "bg-violet-500/15 text-violet-300 border-violet-500/30"),
-    db.ERROR: ("Error", "bg-red-500/15 text-red-300 border-red-500/30"),
+    db.RAW: ("Raw", "st-raw"),
+    db.RESEARCHED: ("Researched", "st-researched"),
+    db.PENDING_REVIEW: ("Pending review", "st-pending"),
+    db.APPROVED: ("Approved", "st-approved"),
+    db.REJECTED: ("Rejected", "st-rejected"),
+    db.DRAFTED: ("Drafted", "st-drafted"),
+    db.ERROR: ("Error", "st-error"),
 }
 
 
@@ -49,8 +53,8 @@ def status_label(status: str) -> str:
 
 
 def status_badge(status: str) -> str:
-    """Tailwind classes for the status pill."""
-    return STATUS_META.get(status, ("", "bg-slate-500/15 text-slate-300 border-slate-500/30"))[1]
+    """Status-pill modifier class for the .status base (see style.css)."""
+    return STATUS_META.get(status, ("", "st-raw"))[1]
 
 
 def fit_color(score: int | None) -> str:

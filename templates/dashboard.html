@@ -3,11 +3,11 @@
 {% block content %}
 
 {# ---------- Run pipeline ---------- #}
-<section class="rounded-2xl border border-slate-800 bg-gradient-to-br from-indigo-950/60 via-slate-900 to-slate-900 p-6 shadow-xl shadow-slate-950/40">
+<section class="panel panel--hero p-6" data-reveal>
   <div class="flex flex-wrap items-center gap-6">
     <div class="min-w-0 flex-1">
-      <h1 class="text-xl font-bold tracking-tight text-white">Run the pipeline</h1>
-      <p class="mt-1 text-sm text-slate-400">
+      <h1 class="text-2xl font-bold tracking-tight text-slate-50">Run the pipeline</h1>
+      <p class="mt-1 text-sm" style="color:var(--muted)">
         Prospect new leads for a target product, deep-research their websites,
         and score them for fit — all in the background.
       </p>
@@ -18,10 +18,10 @@
         name="target_product"
         required
         placeholder="e.g. Cloud Migration Services"
-        class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950/70 px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 sm:w-72"
+        class="field min-w-0 flex-1 sm:w-72"
       >
       <div class="flex items-center gap-2">
-        <label for="limit" class="text-xs font-medium text-slate-400">Limit</label>
+        <label for="limit" class="text-xs font-medium" style="color:var(--muted)">Limit</label>
         <input
           type="number"
           id="limit"
@@ -29,65 +29,75 @@
           value="10"
           min="1"
           max="50"
-          class="w-20 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30"
+          class="field w-20"
         >
       </div>
-      <button
-        type="submit"
-        class="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-950/50 transition hover:from-indigo-400 hover:to-violet-500 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+      <button type="submit" class="btn btn--primary" data-press>
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
         Run pipeline
       </button>
     </form>
   </div>
 </section>
 
-{# ---------- Status overview ---------- #}
-<section class="mt-8">
-  <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Status overview</h2>
-  {% set card_meta = {
-    'raw':           ('bg-slate-500',     'text-slate-300'),
-    'researched':    ('bg-sky-500',       'text-sky-300'),
-    'pending_review':('bg-amber-500',     'text-amber-300'),
-    'approved':      ('bg-emerald-500',   'text-emerald-300'),
-    'rejected':      ('bg-rose-500',      'text-rose-300'),
-    'drafted':       ('bg-violet-500',    'text-violet-300'),
-    'error':         ('bg-red-500',       'text-red-300')
-  } %}
-  <div class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-7">
-    {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
-    {% set meta = card_meta[s] %}
-    <a href="/leads?status={{ s }}" class="group rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition hover:border-slate-700 hover:bg-slate-900">
-      <div class="flex items-center justify-between">
-        <span class="h-2 w-2 rounded-full {{ meta[0] }}"></span>
-        <span class="text-[10px] font-medium uppercase tracking-wider text-slate-500">{{ s|status_label }}</span>
-      </div>
-      <div class="mt-3 text-3xl font-bold tracking-tight {{ meta[1] }}">{{ counts.get(s, 0) }}</div>
-      <div class="mt-1 text-xs text-slate-500 group-hover:text-slate-400">View leads →</div>
-    </a>
-    {% endfor %}
+{# ---------- Pipeline status strip ----------
+   Reads as a stage progression, not seven identical boxes. Every status is
+   individually clickable through to /leads?status=<s>, same as before. #}
+<section class="mt-8" data-reveal>
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="type-heading">Pipeline</h2>
+    <span class="type-meta">{{ counts.values()|sum }} total leads</span>
+  </div>
+  <div class="panel p-4">
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-3">
+      {% set flow = ['raw', 'researched', 'pending_review', 'approved', 'drafted'] %}
+      {% for s in flow %}
+      <a
+        href="/leads?status={{ s }}"
+        class="group flex min-w-[112px] flex-1 basis-32 flex-col gap-1 rounded-lg border px-3.5 py-2.5 transition hover:-translate-y-px"
+        style="border-color:{{ 'var(--accent-strong)' if s == 'pending_review' else 'var(--border)' }}; background:{{ 'var(--accent-tint)' if s == 'pending_review' else 'transparent' }}"
+      >
+        <span class="text-[10px] font-semibold uppercase tracking-wider" style="color:{{ 'var(--accent)' if s == 'pending_review' else 'var(--faint)' }}">{{ s|status_label }}</span>
+        <span class="text-2xl font-bold tabular-nums tracking-tight" style="color:{{ 'var(--accent-strong)' if s == 'pending_review' else 'var(--text-strong)' }}">{{ counts.get(s, 0) }}</span>
+        <span class="text-[10px] font-medium" style="color:var(--faint)">view →</span>
+      </a>
+      {% if not loop.last %}
+      <svg class="h-4 w-4 shrink-0" style="color:var(--border-strong)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
+      {% endif %}
+      {% endfor %}
+      {% for s in ['rejected', 'error'] %}
+      <a
+        href="/leads?status={{ s }}"
+        class="chip {{ 'chip--bad' if s == 'rejected' else 'chip--err' }} !px-3 !py-1.5 !text-xs transition hover:brightness-110"
+      >
+        {{ s|status_label }}
+        <span class="text-xs font-bold tabular-nums">{{ counts.get(s, 0) }}</span>
+      </a>
+      {% if not loop.last %}<span class="text-[11px]" style="color:var(--border-strong)">·</span>{% endif %}
+      {% endfor %}
+      <span class="text-[11px] font-medium" style="color:var(--faint)">terminal</span>
+    </div>
   </div>
 </section>
 
 {# ---------- Products ---------- #}
-<section class="mt-10">
-  <div class="flex items-center justify-between">
-    <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Leads by target product</h2>
-    <a href="/leads" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">View all →</a>
+<section class="mt-10" data-reveal>
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="type-heading">Leads by target product</h2>
+    <a href="/leads" class="text-xs font-medium text-sky-400 hover:text-sky-300">View all →</a>
   </div>
-  <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
     {% for p in products %}
-    <a href="/leads?target_product={{ p|urlencode }}" class="group rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition hover:border-indigo-500/40 hover:bg-slate-900">
+    <a href="/leads?target_product={{ p|urlencode }}" class="row-card px-4 py-3.5">
       <div class="flex items-center justify-between gap-2">
-        <span class="truncate text-sm font-semibold text-slate-200 group-hover:text-indigo-300">{{ p }}</span>
-        <span class="shrink-0 rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-bold text-indigo-300">{{ products.get(p, 0) }}</span>
+        <span class="truncate text-sm font-semibold text-slate-200">{{ p }}</span>
+        <span class="chip chip--accent">{{ products.get(p, 0) }}</span>
       </div>
-      <div class="mt-2 text-xs text-slate-500">pending review: {{ pending_by_product.get(p, 0) }}</div>
+      <div class="mt-1.5 type-meta">pending review: {{ pending_by_product.get(p, 0) }}</div>
     </a>
     {% endfor %}
     {% if not products %}
-    <div class="rounded-xl border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500 sm:col-span-2 lg:col-span-3">
+    <div class="empty sm:col-span-2 lg:col-span-3">
       No leads yet. Run the pipeline above to create your first product campaign.
     </div>
     {% endif %}
@@ -96,75 +106,76 @@
 
 {# ---------- Recent activity ---------- #}
 <section class="mt-10 grid gap-8 lg:grid-cols-5">
-  <div class="lg:col-span-3">
-    <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Recent leads</h2>
-      <a href="/leads" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">View all →</a>
+  <div class="lg:col-span-3" data-reveal>
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="type-heading">Recent leads</h2>
+      <a href="/leads" class="text-xs font-medium text-sky-400 hover:text-sky-300">View all →</a>
     </div>
-    <div class="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+    <div class="panel overflow-hidden">
       {% if recent_leads %}
       <div class="overflow-x-auto">
         <table class="w-full text-left text-sm">
           <thead>
-            <tr class="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-500">
-              <th class="px-4 py-3 font-semibold">Company</th>
-              <th class="px-4 py-3 font-semibold">Status</th>
-              <th class="px-4 py-3 font-semibold">Fit</th>
-              <th class="px-4 py-3 font-semibold">Found</th>
+            <tr class="border-b" style="border-color:var(--border)">
+              <th class="px-4 py-3 type-label">Company</th>
+              <th class="px-4 py-3 type-label">Status</th>
+              <th class="px-4 py-3 text-right type-label">Fit</th>
+              <th class="px-4 py-3 text-right type-label">Found</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-slate-800/70">
+          <tbody class="divide-y divide-slate-800/60">
             {% for lead in recent_leads %}
-            <tr class="transition hover:bg-slate-800/40">
+            {% set sd = lead.scraped_data or {} %}
+            {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+            <tr class="transition hover:bg-[#16223a]">
               <td class="px-4 py-3">
-                <a href="/leads/{{ lead.id }}" class="font-medium text-slate-100 hover:text-indigo-300">{{ lead.company_name }}</a>
+                <a href="/leads/{{ lead.id }}" class="font-medium text-slate-100 hover:text-sky-300">{{ lead.company_name }}</a>
                 {% if lead.website %}
-                <div class="text-xs text-slate-500">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(32, True) }}</div>
+                <div class="text-xs" style="color:var(--faint)">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(32, True) }}</div>
                 {% endif %}
               </td>
               <td class="px-4 py-3">
-                <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+                <span class="status {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
               </td>
-              <td class="px-4 py-3">
-                <div class="font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</div>
-                {% set sd = lead.scraped_data or {} %}
-                {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+              <td class="px-4 py-3 text-right">
+                <span class="score score--md {{ lead.fit_score|fit_color }}">{{ lead.fit_score if lead.fit_score is not none else '—' }}</span>
                 {% if conf is not none %}
-                <div class="text-[10px] font-semibold text-sky-400">{{ conf }}% conf</div>
+                <div class="text-[11px] font-semibold tabular-nums" style="color:var(--accent)">{{ conf }}% conf</div>
                 {% endif %}
               </td>
-              <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>            </tr>
+              <td class="px-4 py-3 text-right text-xs" style="color:var(--faint)">{{ lead.created_at|fmt_dt }}</td>
+            </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
       {% else %}
-      <div class="px-4 py-10 text-center text-sm text-slate-500">
+      <div class="px-4 py-10 text-center text-sm" style="color:var(--faint)">
         No leads yet. Run the pipeline above to find your first prospects.
       </div>
       {% endif %}
     </div>
   </div>
 
-  <div class="lg:col-span-2">
-    <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Latest drafts</h2>
-      <a href="/drafts" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">View all →</a>
+  <div class="lg:col-span-2" data-reveal>
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="type-heading">Latest drafts</h2>
+      <a href="/drafts" class="text-xs font-medium text-sky-400 hover:text-sky-300">View all →</a>
     </div>
-    <div class="mt-4 space-y-3">
+    <div class="space-y-3">
       {% if recent_drafts %}
       {% for d in recent_drafts %}
-      <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition hover:border-slate-700">
-        <div class="text-xs font-semibold text-indigo-300">{{ d.company_name }}</div>
-        <div class="mt-1 truncate text-sm font-medium text-slate-200">{{ d.subject|default('(no subject)') }}</div>
+      <div class="row-card px-4 py-3.5">
+        <div class="chip chip--accent">{{ d.company_name }}</div>
+        <div class="mt-2 truncate text-sm font-medium text-slate-200">{{ d.subject if d.subject is not none else '(no subject)' }}</div>
         <div class="mt-2 flex items-center justify-between">
-          <span class="text-xs text-slate-500">{{ d.created_at|fmt_dt }}</span>
-          <a href="/drafts" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">View →</a>
+          <span class="type-meta">{{ d.created_at|fmt_dt }}</span>
+          <a href="/drafts" class="text-xs font-medium text-sky-400 hover:text-sky-300">View →</a>
         </div>
       </div>
       {% endfor %}
       {% else %}
-      <div class="rounded-xl border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">
+      <div class="empty">
         No drafts yet. Approve a lead and the email is drafted automatically.
       </div>
       {% endif %}

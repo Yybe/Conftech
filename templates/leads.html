@@ -2,10 +2,29 @@
 {% block title %}Leads · Conftech{% endblock %}
 {% block content %}
 
-<div class="flex flex-wrap items-end justify-between gap-4">
+{% set seg_labels = {
+  'smb_mid': 'SMB / Mid-market',
+  'listing': 'Publicly listed',
+  'government_adjacent': 'Government-adjacent',
+  'large_enterprise': 'Large enterprise',
+  'public_sector': 'Public sector',
+  'service_provider': 'Service provider'
+} %}
+{% set seg_classes = {
+  'smb_mid': 'chip--accent',
+  'listing': 'chip--warn',
+  'government_adjacent': 'chip--warn',
+  'large_enterprise': 'chip--bad',
+  'public_sector': 'chip--bad',
+  'service_provider': 'chip--bad'
+} %}
+
+<div class="flex flex-wrap items-end justify-between gap-4" data-reveal>
   <div>
-    <h1 class="text-xl font-bold tracking-tight text-white">Leads</h1>
-    <p class="mt-1 text-sm text-slate-400">{{ leads|length }} lead(s) shown</p>
+    <h1 class="text-2xl font-bold tracking-tight text-slate-50">Leads</h1>
+    <p class="mt-1 text-sm" style="color:var(--muted)">
+      <span data-load-count>{{ leads|length }}</span> lead(s) shown
+    </p>
   </div>
   <form method="get" action="/leads" class="flex items-center gap-2">
     {% if current_status %}
@@ -21,134 +40,177 @@
       placeholder="Min fit score"
       min="0"
       max="100"
-      class="w-36 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30"
+      class="field w-32"
     >
-    <button type="submit" class="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-700/60">Filter</button>
+    <button type="submit" class="btn btn--ghost" data-press>Filter</button>
     {% if current_status or min_score or target_product %}
-    <a href="/leads" class="rounded-lg px-3 py-2 text-sm text-slate-400 hover:text-slate-200">Clear</a>
+    <a href="/leads" class="rounded-lg px-2 py-2 text-sm text-slate-400 hover:text-slate-200">Clear</a>
     {% endif %}
   </form>
 </div>
 
-{# ---------- Product tabs ---------- #}
+{# ---------- Product filter (segmented) ---------- #}
 {% if products %}
-<div class="mt-5">
-  <div class="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Target product</div>
-  <div class="mt-2 flex flex-wrap gap-2">
+<div class="mt-6" data-reveal>
+  <div class="seg">
     {% set all_count = counts.values()|sum %}
-    <a href="/leads{% if current_status %}?status={{ current_status }}{% endif %}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if not target_product else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
-      All products <span class="ml-1 text-xs opacity-70">{{ all_count }}</span>
-    </a>
+    <a href="/leads{% if current_status %}?status={{ current_status }}{% endif %}" class="{{ '' if target_product else 'is-active' }}">All products<span class="seg__count">{{ all_count }}</span></a>
     {% for p in products %}
     {% set href = '/leads?target_product=' ~ p|urlencode %}
     {% if current_status %}{% set href = href ~ '&status=' ~ current_status %}{% endif %}
-    <a href="{{ href }}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if target_product == p else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
-      {{ p }} <span class="ml-1 text-xs opacity-70">{{ leads_by_product.get(p, 0) }}</span>
-    </a>
+    <a href="{{ href }}" class="{{ 'is-active' if target_product == p else '' }}">{{ p }}<span class="seg__count">{{ leads_by_product.get(p, 0) }}</span></a>
     {% endfor %}
   </div>
 </div>
 {% endif %}
 
 {% if notice == 'started' %}
-<div class="mt-5 flex items-center gap-3 rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+<div class="mt-5 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm" data-reveal
+     style="border-color:color-mix(in srgb, var(--accent) 40%, transparent); background:var(--accent-tint); color:var(--accent)">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
   Pipeline started — new leads will appear here shortly.
 </div>
 {% endif %}
 
-{# ---------- Status tabs ---------- #}
-<div class="mt-6 flex flex-wrap gap-2">
-  <a href="/leads" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if not current_status else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
-    All <span class="ml-1 text-xs opacity-70">{{ counts.values()|sum }}</span>
-  </a>
-  {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
-  <a href="/leads?status={{ s }}" class="rounded-lg px-3.5 py-2 text-sm font-medium transition {{ 'bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/40' if current_status == s else 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}">
-    {{ s|status_label }} <span class="ml-1 text-xs opacity-70">{{ counts.get(s, 0) }}</span>
-  </a>
+{# ---------- Status filter (segmented) ---------- #}
+<div class="mt-5 flex flex-wrap items-center gap-3" data-reveal>
+  <div class="seg">
+    <a href="/leads{% if target_product %}?target_product={{ target_product|urlencode }}{% endif %}" class="{{ 'is-active' if not current_status else '' }}">All<span class="seg__count">{{ counts.values()|sum }}</span></a>
+    {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
+    {% set href = '/leads?status=' ~ s %}
+    {% if target_product %}{% set href = href ~ '&target_product=' ~ target_product|urlencode %}{% endif %}
+    <a href="{{ href }}" class="{{ 'is-active' if current_status == s else '' }}">{{ s|status_label }}<span class="seg__count">{{ counts.get(s, 0) }}</span></a>
+    {% endfor %}
+  </div>
+  {% if current_status or min_score or target_product %}
+  <a href="/leads" class="text-xs font-medium text-sky-400 hover:text-sky-300">Clear filters</a>
+  {% endif %}
+</div>
+
+{# ---------- Lead rows ---------- #}
+{% if leads %}
+<div class="mt-4 space-y-2.5">
+  {% for lead in leads %}
+  {% set sd = lead.scraped_data or {} %}
+  {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+  {% set cp = lead.company_profile or {} %}
+  <article class="row-card" data-reveal data-hideable {% if loop.index > 25 %}hidden{% endif %}>
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3.5">
+      {# Company block: name + status inline, meta line, classification chips #}
+      <div class="min-w-0 flex-1 basis-64">
+        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <a href="/leads/{{ lead.id }}" class="truncate text-[15px] font-semibold text-slate-100 hover:text-sky-300">{{ lead.company_name }}</a>
+          <span class="status {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" style="color:var(--faint)">
+          {% if lead.website %}
+          <a href="{{ lead.website }}" target="_blank" rel="noopener" class="hover:text-sky-300">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(32, True) }}</a>
+          {% endif %}
+          {% if lead.contact_email %}<span>{{ lead.contact_email }}</span>{% endif %}
+          {% if lead.target_product %}<span class="font-medium text-slate-500">{{ lead.target_product }}</span>{% endif %}
+          <span>{{ lead.created_at|fmt_dt }}</span>
+        </div>
+        {% if cp.segment or cp.employee_range or cp.industry %}
+        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {% if cp.segment %}
+          <span class="chip {{ seg_classes.get(cp.segment, '') }}" title="company_profile.segment">{{ seg_labels.get(cp.segment, cp.segment) }}</span>
+          {% endif %}
+          {% if cp.employee_range %}<span class="chip">{{ cp.employee_range }} employees</span>{% endif %}
+          {% if cp.industry %}<span class="chip">{{ cp.industry }}</span>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+
+      {# Scores: the numbers driving the approve/reject decision #}
+      <div class="flex items-end gap-5">
+        <div class="text-right">
+          <div class="score-label">Fit</div>
+          <div class="mt-0.5 {{ lead.fit_score|fit_color }}">
+            <span class="score score--md">{{ lead.fit_score if lead.fit_score is not none else '—' }}</span>
+            {% if lead.fit_score is not none %}
+            <div class="track mt-1 w-16"><i style="--p:{{ lead.fit_score }}%"></i></div>
+            {% endif %}
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="score-label">Confidence</div>
+          <div class="mt-0.5" style="color:var(--accent)">
+            <span class="score score--md">{{ conf if conf is not none else '—' }}{% if conf is not none %}<span class="text-xs font-bold">%</span>{% endif %}</span>
+            {% if conf is not none %}
+            <div class="track mt-1 w-16"><i style="--p:{{ conf }}%"></i></div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# Expand toggle #}
+      <button
+        type="button"
+        class="row-toggle shrink-0"
+        data-expander
+        aria-controls="lead-exp-{{ loop.index }}"
+        aria-expanded="false"
+        title="Show evidence"
+      >
+        <svg class="chev h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+      </button>
+    </div>
+
+    {# Expandable evidence preview: full reasoning instead of the 110-char truncation #}
+    <div class="expand" id="lead-exp-{{ loop.index }}">
+      <div class="expand__inner">
+        <div class="border-t px-4 py-4" style="border-color:var(--border)">
+          {% if lead.reasoning %}
+          <p class="text-sm leading-relaxed text-slate-300">{{ lead.reasoning }}</p>
+          {% elif sd.evidence %}
+          <p class="text-sm" style="color:var(--faint)">{{ sd.evidence|length }} finding(s), not yet scored.</p>
+          {% else %}
+          <p class="text-sm" style="color:var(--faint)">No research evidence yet.</p>
+          {% endif %}
+
+          {% if sd.top_reasons %}
+          <ul class="mt-3 space-y-1.5">
+            {% for r in sd.top_reasons[:4] %}
+            <li class="flex items-start gap-2 text-xs">
+              <span class="mt-1.5 h-1 w-1 shrink-0 rounded-full" style="background:var(--accent)"></span>
+              <div class="min-w-0">
+                <span class="font-medium text-slate-300">{{ r.reason }}</span>
+                {% if r.quote %}<span class="text-slate-500"> — “{{ r.quote|truncate(110, True) }}”</span>{% endif %}
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+
+          <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] font-medium" style="color:var(--faint)">
+            {% if sd.pages_crawled %}<span>{{ sd.pages_crawled|length }} pages crawled</span>{% endif %}
+            {% if sd.evidence %}<span>{{ sd.evidence|length }} findings</span>{% endif %}
+            {% if sd.buying_signals %}<span class="chip chip--ok">{{ sd.buying_signals|length }} buying signal(s)</span>{% endif %}
+            {% if sd.extractor %}<span>{{ sd.extractor }}</span>{% endif %}
+            <a href="/leads/{{ lead.id }}" class="font-semibold text-sky-400 hover:text-sky-300">Open lead →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
   {% endfor %}
 </div>
 
-{# ---------- Leads table ---------- #}
-<div class="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-  {% if leads %}
-  <div class="overflow-x-auto">
-    <table class="w-full text-left text-sm">
-      <thead>
-        <tr class="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-500">
-          <th class="px-4 py-3 font-semibold">Company</th>
-          <th class="px-4 py-3 font-semibold">Website</th>
-          <th class="px-4 py-3 font-semibold">Target</th>
-          <th class="px-4 py-3 font-semibold">Status</th>
-          <th class="px-4 py-3 font-semibold">Fit</th>
-          <th class="px-4 py-3 font-semibold">Conf</th>
-          <th class="px-4 py-3 font-semibold">Why (evidence)</th>
-          <th class="px-4 py-3 font-semibold">Found</th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800/70">
-        {% for lead in leads %}
-        <tr class="transition hover:bg-slate-800/40">
-          <td class="px-4 py-3">
-            <a href="/leads/{{ lead.id }}" class="font-medium text-slate-100 hover:text-indigo-300">{{ lead.company_name }}</a>
-            {% if lead.contact_email %}
-            <div class="text-xs text-slate-500">{{ lead.contact_email }}</div>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3">
-            {% if lead.website %}
-            <a href="{{ lead.website }}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-indigo-300">
-              {{ lead.website|replace('https://', '')|replace('http://', '')|truncate(30, True) }}
-            </a>
-            {% else %}<span class="text-xs text-slate-600">—</span>{% endif %}
-          </td>
-          <td class="px-4 py-3 text-xs text-slate-400">{{ lead.target_product|default('—') }}</td>
-          <td class="px-4 py-3">
-            <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
-          </td>
-          <td class="px-4 py-3 font-semibold {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</td>
-          <td class="px-4 py-3">
-            {% set sd = lead.scraped_data or {} %}
-            {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
-            {% if conf is not none %}
-            <span class="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-bold text-sky-300">{{ conf }}%</span>
-            {% else %}
-            <span class="text-xs text-slate-600">—</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3">
-            {% set sd = lead.scraped_data or {} %}
-            {% if lead.reasoning %}
-            <a href="/leads/{{ lead.id }}" class="group flex items-start gap-1.5">
-              <span class="text-xs text-slate-400 group-hover:text-indigo-300">{{ lead.reasoning|truncate(110, True) }}</span>
-              {% if sd.score_evidence %}
-              <span class="shrink-0 rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300" title="evidence citations">{{ sd.score_evidence|length }} ev</span>
-              {% endif %}
-            </a>
-            {% elif sd.evidence %}
-            <a href="/leads/{{ lead.id }}" class="text-xs text-slate-500 hover:text-indigo-300">{{ sd.evidence|length }} finding(s), unscored</a>
-            {% else %}
-            <span class="text-xs text-slate-600">—</span>
-            {% endif %}
-          </td>
-          <td class="px-4 py-3 text-xs text-slate-500">{{ lead.created_at|fmt_dt }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="px-4 py-16 text-center">
-    <div class="text-sm font-medium text-slate-300">No leads here</div>
-    <p class="mt-1 text-sm text-slate-500">
-      {% if current_status or min_score or target_product %}
-      Try a different filter, or <a href="/leads" class="text-indigo-400 hover:text-indigo-300">clear filters</a>.
-      {% else %}
-      Run the pipeline from the dashboard to find your first prospects.
-      {% endif %}
-    </p>
-  </div>
-  {% endif %}
+<div class="mt-5 text-center">
+  <button type="button" class="btn btn--ghost" data-load-more hidden>Load more</button>
 </div>
+
+{% else %}
+<div class="empty mt-4" data-reveal>
+  <div class="text-sm font-medium text-slate-300">No leads here</div>
+  <p class="mt-1 text-sm" style="color:var(--faint)">
+    {% if current_status or min_score or target_product %}
+    Try a different filter, or <a href="/leads" class="font-medium text-sky-400 hover:text-sky-300">clear filters</a>.
+    {% else %}
+    Run the pipeline from the dashboard to find your first prospects.
+    {% endif %}
+  </p>
+</div>
+{% endif %}
 
 {% endblock %}

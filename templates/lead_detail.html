@@ -2,250 +2,292 @@
 {% block title %}{{ lead.company_name }} · Conftech{% endblock %}
 {% block content %}
 
+{% set sd = lead.scraped_data or {} %}
+{% set cp = lead.company_profile or {} %}
+{% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+{% set seg_labels = {
+  'smb_mid': 'SMB / Mid-market',
+  'listing': 'Publicly listed',
+  'government_adjacent': 'Government-adjacent',
+  'large_enterprise': 'Large enterprise',
+  'public_sector': 'Public sector',
+  'service_provider': 'Service provider'
+} %}
+{% set seg_notes = {
+  'smb_mid': 'Matches the SMB / mid-market buyer profile — no enterprise, public-sector, or competitor signals were detected at discovery.',
+  'listing': 'Publicly listed company — kept as a candidate, but the fit score is penalized (−15) for being enterprise-adjacent.',
+  'government_adjacent': 'Government-adjacent — kept as a candidate, but the fit score is penalized (−20).',
+  'large_enterprise': 'Large enterprise — flagged as a poor cold-outreach target (−35).',
+  'public_sector': 'Public sector — flagged as a poor cold-outreach target (−35).',
+  'service_provider': 'Service provider — sells the same kind of service; unlikely to be a buyer.'
+} %}
+{# `mission` is just the homepage <title>; surface it as a header byline only
+   when it adds information beyond the company name. #}
+{% set mission_byline = '' %}
+{% if sd.mission and lead.company_name and lead.company_name|lower not in sd.mission|lower %}
+  {% set mission_byline = sd.mission %}
+{% endif %}
+
 {# ---------- Header ---------- #}
-<div class="flex flex-wrap items-start justify-between gap-4">
+<div class="flex flex-wrap items-start justify-between gap-6" data-reveal>
   <div class="min-w-0">
-    <div class="flex flex-wrap items-center gap-3">
-      <h1 class="text-2xl font-bold tracking-tight text-white">{{ lead.company_name }}</h1>
-      <span class="rounded-full border px-2.5 py-0.5 text-xs {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+    <div class="flex flex-wrap items-center gap-2.5">
+      <span class="status {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+      {% if lead.target_product %}<span class="chip chip--accent">{{ lead.target_product }}</span>{% endif %}
+      {% if lead.source %}<span class="chip">via {{ lead.source }}</span>{% endif %}
     </div>
-    {% if lead.website %}
-    <a href="{{ lead.website }}" target="_blank" rel="noopener" class="mt-1 inline-flex items-center gap-1.5 text-sm text-indigo-400 hover:text-indigo-300">
-      {{ lead.website }}
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-    </a>
+    <h1 class="mt-2.5 text-3xl font-bold tracking-tight text-slate-50">{{ lead.company_name }}</h1>
+    <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" style="color:var(--faint)">
+      {% if lead.website %}
+      <a href="{{ lead.website }}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 font-medium text-sky-400 hover:text-sky-300">
+        {{ lead.website|replace('https://', '')|replace('http://', '') }}
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+      </a>
+      {% endif %}
+      {% if lead.contact_email %}<a href="mailto:{{ lead.contact_email }}" class="hover:text-sky-300">{{ lead.contact_email }}</a>{% endif %}
+      <span>Discovered {{ lead.created_at|fmt_dt }}</span>
+      {% if mission_byline %}<span class="text-slate-600">— {{ mission_byline }}</span>{% endif %}
+    </div>
+
+    {# Pipeline track: where this lead sits in the flow #}
+    {% set step_idx = {'raw': 0, 'researched': 1, 'pending_review': 2, 'approved': 3, 'drafted': 3}.get(lead.status) %}
+    {% if step_idx is not none %}
+    <div class="pipe mt-4">
+      {% for key, label in [('raw', 'Raw'), ('researched', 'Researched'), ('pending_review', 'Pending review'), ('done', 'Done')] %}
+      <span class="pipe__node {{ 'is-done' if loop.index0 < step_idx else '' }} {{ 'is-now' if loop.index0 == step_idx else '' }}"><i></i>{{ label }}</span>
+      {% if not loop.last %}<span class="pipe__line {{ 'is-done' if loop.index0 < step_idx else '' }}"></span>{% endif %}
+      {% endfor %}
+    </div>
     {% endif %}
   </div>
-  <div class="flex items-center gap-6">
-    <div class="text-right">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Fit score</div>
-      <div class="text-4xl font-extrabold tracking-tight {{ lead.fit_score|fit_color }}">{{ lead.fit_score|default('—') }}</div>
-      {% set sd = lead.scraped_data or {} %}
-      {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
-      <div class="mt-1 flex items-center justify-end gap-1.5">
-        <span class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Confidence</span>
-        {% if conf is not none %}
-        <span class="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-xs font-bold text-sky-300">{{ conf }}%</span>
-        {% else %}
-        <span class="text-xs text-slate-600">—</span>
-        {% endif %}
+
+  <div class="flex flex-wrap items-center gap-6">
+    <div class="flex items-end gap-6">
+      <div class="text-right">
+        <div class="score-label">Fit score</div>
+        <div class="{{ lead.fit_score|fit_color }}">
+          <span class="score score--xl">{{ lead.fit_score if lead.fit_score is not none else '—' }}</span>
+          {% if lead.fit_score is not none %}
+          <div class="track mt-1.5 w-24"><i style="--p:{{ lead.fit_score }}%"></i></div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="text-right">
+        <div class="score-label">Confidence</div>
+        <div style="color:var(--accent)">
+          <span class="score score--xl">{{ conf if conf is not none else '—' }}{% if conf is not none %}<span class="text-lg font-bold">%</span>{% endif %}</span>
+          {% if conf is not none %}
+          <div class="track mt-1.5 w-24"><i style="--p:{{ conf }}%"></i></div>
+          {% endif %}
+        </div>
+        <div class="mt-1 text-[10px]" style="color:var(--faint)">deterministic, not LLM-guessed</div>
       </div>
     </div>
+
     {% if lead.status in ['pending_review', 'researched', 'raw'] %}
     <div class="flex flex-col gap-2">
       <form method="post" action="/leads/{{ lead.id }}/approve">
-        <button type="submit" class="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-400/50">
+        <button type="submit" class="btn btn--success w-full" data-press>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
           Approve
         </button>
       </form>
       <form method="post" action="/leads/{{ lead.id }}/reject">
-        <button type="submit" class="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-5 py-2.5 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20 focus:outline-none focus:ring-2 focus:ring-rose-400/40">
+        <button type="submit" class="btn btn--danger w-full" data-press>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
           Reject
         </button>
       </form>
     </div>
     {% elif lead.status == 'approved' %}
-    <div class="rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+    <div class="rounded-xl border px-4 py-3 text-sm font-medium" style="color:var(--ok); border-color:color-mix(in srgb, var(--ok) 40%, transparent); background:var(--ok-tint)">
       Approved — email will be drafted automatically.
     </div>
     {% elif lead.status == 'drafted' %}
-    <a href="/drafts" class="rounded-lg border border-violet-500/40 bg-violet-500/10 px-4 py-2.5 text-sm font-semibold text-violet-300 transition hover:bg-violet-500/20">
-      View draft ↓
-    </a>
+    <a href="/drafts" class="btn btn--primary" data-press>View draft →</a>
     {% endif %}
   </div>
 </div>
 
-{# ---------- Why this lead (top reasons, evidence trail) ---------- #}
-{% set sd = lead.scraped_data or {} %}
-<section class="mt-8 rounded-2xl border border-indigo-900/50 bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-900 p-6">
-  <div class="flex items-center gap-3">
-    <h2 class="text-sm font-semibold uppercase tracking-widest text-indigo-300">Why this lead</h2>
-    {% if sd.top_reasons %}
-    <span class="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[10px] font-medium text-indigo-300">{{ sd.top_reasons|length }} top reason(s)</span>
+{# ---------- Company profile (the classification that justifies the lead) ---------- #}
+<section class="panel panel--hero mt-8 p-6" data-reveal>
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-base font-semibold text-slate-100">Company profile</h2>
+    <span class="type-meta">classified from public metadata at discovery</span>
+  </div>
+
+  {% if cp.segment or cp.industry or cp.employee_range %}
+  <div class="mt-4 flex flex-wrap items-center gap-2">
+    {% if cp.segment %}
+    <span class="chip chip--accent !px-3 !py-1 !text-xs font-bold">{{ seg_labels.get(cp.segment, cp.segment) }}</span>
     {% endif %}
+    {% if cp.employee_range %}<span class="chip">{{ cp.employee_range }} employees</span>{% endif %}
+    {% if cp.industry %}<span class="chip">{{ cp.industry }}</span>{% endif %}
+    {% if cp.publicly_traded_symbol %}<span class="chip chip--warn">listed: {{ cp.publicly_traded_symbol }}</span>{% endif %}
+    {% if cp.founded_year %}<span class="chip">founded {{ cp.founded_year }}</span>{% endif %}
+    {% if cp.annual_revenue_usd_readable %}<span class="chip">{{ cp.annual_revenue_usd_readable }}</span>{% endif %}
   </div>
 
-  {% if lead.reasoning %}
-  <p class="mt-3 text-sm leading-relaxed text-slate-200">{{ lead.reasoning }}</p>
+  <div class="mt-4 border-t pt-4" style="border-color:var(--border)">
+    <div class="type-label">Why this company qualifies</div>
+    <p class="mt-1.5 text-sm leading-relaxed" style="color:var(--muted)">
+      {{ seg_notes.get(cp.segment, 'Classified by the quality filter at discovery.') }}
+    </p>
+  </div>
+
+  <div class="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t pt-4 sm:grid-cols-4" style="border-color:var(--border)">
+    {% if cp.industry %}<div><div class="type-label">Industry</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.industry }}</div></div>{% endif %}
+    {% if cp.employee_range %}<div><div class="type-label">Employees</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.employee_range }}</div></div>{% endif %}
+    {% if cp.founded_year is number %}<div><div class="type-label">Founded</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.founded_year }}</div></div>{% endif %}
+    {% if cp.annual_revenue_usd_readable %}<div><div class="type-label">Revenue</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.annual_revenue_usd_readable }}</div></div>{% endif %}
+    {% if cp.total_funding_usd is number %}<div><div class="type-label">Total funding</div><div class="mt-1 text-sm font-medium text-slate-200">${{ '{:,.0f}'.format(cp.total_funding_usd) }}</div></div>{% endif %}
+    {% if cp.publicly_traded_symbol %}<div><div class="type-label">Listing</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.publicly_traded_symbol }}</div></div>{% endif %}
+    {% if cp.num_jobs is number %}<div><div class="type-label">Open jobs</div><div class="mt-1 text-sm font-medium text-slate-200">{{ cp.num_jobs }}</div></div>{% endif %}
+    {% if cp.alexa_ranking is number %}<div><div class="type-label">Site rank</div><div class="mt-1 text-sm font-medium text-slate-200">#{{ cp.alexa_ranking }}</div></div>{% endif %}
+  </div>
+
+  {% if cp.company_tags %}
+  <div class="mt-4 flex flex-wrap gap-1.5 border-t pt-4" style="border-color:var(--border)">
+    {% for t in cp.company_tags[:12] %}<span class="chip">{{ t }}</span>{% endfor %}
+  </div>
+  {% endif %}
   {% else %}
-  <p class="mt-3 text-sm text-slate-500">Not scored yet.</p>
-  {% endif %}
-
-  {# --- Top reasons: strongest evidence first, every item clickable --- #}
-  {% if sd.top_reasons %}
-  <ul class="mt-4 space-y-2.5">
-    {% for r in sd.top_reasons %}
-    <li class="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-      <div class="flex items-start gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
-        <div class="min-w-0 flex-1">
-          <div class="text-sm font-semibold text-slate-100">{{ r.reason }}</div>
-          {% if r.claim and r.claim != r.reason %}
-          <div class="mt-0.5 text-xs text-slate-400">{{ r.claim }}</div>
-          {% endif %}
-          {% if r.quote %}
-          <blockquote class="mt-1.5 border-l-2 border-indigo-500/50 pl-2.5 text-xs leading-relaxed text-slate-400">“{{ r.quote }}”</blockquote>
-          {% endif %}
-          {% if r.url %}
-          <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-            <a href="{{ r.url }}" target="_blank" rel="noopener" class="font-medium text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ r.url|replace('https://', '')|replace('http://', '')|truncate(38, True) }}</a>
-            {% if r.page_title %}
-            <span class="text-slate-500">— {{ r.page_title }}</span>
-            {% endif %}
-          </div>
-          {% endif %}
-        </div>
-      </div>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  {# --- Filter findings: why the score was penalized (if any) --- #}
-  {% if sd.filter_findings %}
-  <div class="mt-4 rounded-xl border border-rose-800/40 bg-rose-950/30 p-4">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-rose-300">Cold-outreach fit adjustments</div>
-    <ul class="mt-2 space-y-2">
-      {% for f in sd.filter_findings %}
-      <li class="flex items-start gap-2 text-xs text-rose-200/80">
-        <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
-        <div class="min-w-0">
-          <span>{{ f.reason }}</span>
-          {% if f.url %}
-          <a href="{{ f.url }}" target="_blank" rel="noopener" class="ml-1 text-rose-300 underline underline-offset-2">{{ f.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
-          {% endif %}
-        </div>
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
-  {% endif %}
-
-  {# --- Evidence trail (validated citations) --- #}
-  {% if sd.score_evidence %}
-  <div class="mt-5">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Evidence trail ({{ sd.score_evidence|length }} validated citation(s))</div>
-    <ul class="mt-2 space-y-2">
-      {% for ev in sd.score_evidence %}
-      <li class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3">
-        <div class="flex items-start justify-between gap-3">
-          <div class="text-xs font-medium text-slate-200">{{ ev.claim }}</div>
-          {% if ev.url %}
-          <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-[11px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
-          {% endif %}
-        </div>
-        {% if ev.quote %}
-        <blockquote class="mt-1 border-l-2 border-indigo-500/40 pl-2.5 text-[11px] leading-relaxed text-slate-500">“{{ ev.quote }}”</blockquote>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
+  <p class="mt-3 text-sm" style="color:var(--faint)">No company profile was recorded for this lead.</p>
   {% endif %}
 </section>
 
-{# ---------- Info grid ---------- #}
-<div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Target product</div>
-    <div class="mt-1.5 text-sm font-medium text-slate-200">{{ lead.target_product|default('—') }}</div>
+{# ---------- Why this lead (reasoning, evidence trail, filter adjustments) ---------- #}
+<section class="mt-8" data-reveal>
+  <div class="mb-3 flex items-center gap-3">
+    <h2 class="type-heading">Why this lead</h2>
+    {% if sd.top_reasons %}<span class="chip chip--accent">{{ sd.top_reasons|length }} top reason(s)</span>{% endif %}
   </div>
-  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Source</div>
-    <div class="mt-1.5 text-sm font-medium text-slate-200">{{ lead.source|default('—') }}</div>
-  </div>
-  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Contact email</div>
-    {% if lead.contact_email %}
-    <a href="mailto:{{ lead.contact_email }}" class="mt-1.5 block truncate text-sm font-medium text-indigo-400 hover:text-indigo-300">{{ lead.contact_email }}</a>
+
+  <div class="panel panel--inset p-5">
+    {% if lead.reasoning %}
+    <p class="text-sm leading-relaxed text-slate-300">{{ lead.reasoning }}</p>
     {% else %}
-    <div class="mt-1.5 text-sm font-medium text-slate-500">—</div>
+    <p class="text-sm" style="color:var(--faint)">Not scored yet.</p>
     {% endif %}
-  </div>
-  <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Discovered</div>
-    <div class="mt-1.5 text-sm font-medium text-slate-200">{{ lead.created_at|fmt_dt }}</div>
-  </div>
-</div>
 
-{# ---------- Tech stack ---------- #}
-{% if lead.tech_stack %}
-<div class="mt-6">
-  <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Tech stack</h2>
-  <div class="mt-3 flex flex-wrap gap-2">
-    {% for t in lead.tech_stack %}
-    <span class="rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-xs font-medium text-slate-300">{{ t }}</span>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
+    {# --- Top reasons: strongest evidence first, every item clickable --- #}
+    {% if sd.top_reasons %}
+    <ul class="mt-4 space-y-2.5">
+      {% for r in sd.top_reasons %}
+      <li class="rounded-lg border p-3.5" style="border-color:var(--border); background:var(--panel)">
+        <div class="flex items-start gap-2.5">
+          <svg class="mt-0.5 h-4 w-4 shrink-0" style="color:var(--ok)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold text-slate-100">{{ r.reason }}</div>
+            {% if r.claim and r.claim != r.reason %}
+            <div class="mt-0.5 text-xs" style="color:var(--muted)">{{ r.claim }}</div>
+            {% endif %}
+            {% if r.quote %}
+            <blockquote class="mt-1.5 border-l-2 pl-2.5 text-xs leading-relaxed" style="border-color:var(--accent); color:var(--muted)">“{{ r.quote }}”</blockquote>
+            {% endif %}
+            {% if r.url %}
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+              <a href="{{ r.url }}" target="_blank" rel="noopener" class="font-medium text-sky-400 underline underline-offset-2 hover:text-sky-300">{{ r.url|replace('https://', '')|replace('http://', '')|truncate(38, True) }}</a>
+              {% if r.page_title %}<span style="color:var(--faint)">— {{ r.page_title }}</span>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
 
-{# ---------- Research data ---------- #}
-{% set sd = lead.scraped_data or {} %}
-{% if sd %}
-<section class="mt-8">
-  <div class="flex items-center gap-3">
-    <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Research</h2>
-    {% if sd.extractor %}
-    <span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">{{ sd.extractor }}</span>
-    {% endif %}
-    {% if sd.pages_crawled %}
-    <span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">{{ sd.pages_crawled|length }} pages crawled</span>
-    {% endif %}
-    {% if sd.buying_signals %}
-    <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/30">{{ sd.buying_signals|length }} buying signal(s)</span>
-    {% endif %}
-  </div>
-
-  <div class="mt-4 space-y-4">
-    {% if sd.mission %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Mission</div>
-      <p class="mt-2 text-sm leading-relaxed text-slate-200">{{ sd.mission }}</p>
+    {# --- Filter findings: why the score was penalized (if any) --- #}
+    {% if sd.filter_findings %}
+    <div class="mt-4 rounded-lg border p-4" style="border-color:color-mix(in srgb, var(--bad) 35%, transparent); background:var(--bad-tint)">
+      <div class="type-label" style="color:var(--bad)">Cold-outreach fit adjustments</div>
+      <ul class="mt-2 space-y-2">
+        {% for f in sd.filter_findings %}
+        <li class="flex items-start gap-2 text-xs" style="color:rgba(251,113,133,0.85)">
+          <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" style="color:var(--bad)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
+          <div class="min-w-0">
+            <span>{{ f.reason }}</span>
+            {% if f.url %}
+            <a href="{{ f.url }}" target="_blank" rel="noopener" class="ml-1 underline underline-offset-2 hover:text-rose-300">{{ f.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
     </div>
     {% endif %}
 
+    {# --- Evidence trail (validated citations) --- #}
+    {% if sd.score_evidence %}
+    <div class="mt-5">
+      <div class="type-label">Evidence trail ({{ sd.score_evidence|length }} validated citation(s))</div>
+      <ul class="mt-2 space-y-2">
+        {% for ev in sd.score_evidence %}
+        <li class="rounded-lg border p-3" style="border-color:var(--border); background:var(--panel-2)">
+          <div class="flex items-start justify-between gap-3">
+            <div class="text-xs font-medium text-slate-200">{{ ev.claim }}</div>
+            {% if ev.url %}
+            <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-[11px] text-sky-400 underline underline-offset-2 hover:text-sky-300">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+            {% endif %}
+          </div>
+          {% if ev.quote %}
+          <blockquote class="mt-1 border-l-2 pl-2.5 text-[11px] leading-relaxed" style="border-color:var(--accent-border); color:var(--faint)">“{{ ev.quote }}”</blockquote>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+{# ---------- Research data ---------- #}
+<section class="mt-8" data-reveal>
+  <div class="mb-3 flex flex-wrap items-center gap-3">
+    <h2 class="type-heading">Research</h2>
+    {% if sd.extractor %}<span class="chip">{{ sd.extractor }}</span>{% endif %}
+    {% if sd.pages_crawled %}<span class="chip">{{ sd.pages_crawled|length }} pages crawled</span>{% endif %}
+    {% if sd.buying_signals %}<span class="chip chip--ok">{{ sd.buying_signals|length }} buying signal(s)</span>{% endif %}
+  </div>
+
+  <div class="space-y-4">
     {% if sd.summary %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Summary</div>
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Summary</div>
       <p class="mt-2 text-sm leading-relaxed text-slate-300">{{ sd.summary }}</p>
     </div>
     {% endif %}
 
     {% if sd.pain_points %}
     {% set pain_evidence = sd.evidence | selectattr('type', 'equalto', 'pain_point') | list %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Pain points</div>
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Pain points</div>
       {% if pain_evidence %}
-      <ul class="mt-2 space-y-2.5">
+      <ul class="mt-2.5 space-y-2.5">
         {% for ev in pain_evidence[:8] %}
         <li class="flex items-start gap-2.5 text-sm text-slate-300">
-          <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-4 w-4 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
+          <svg class="mt-0.5 h-4 w-4 shrink-0" style="color:var(--warn)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
           <div class="min-w-0">
             <div>{{ ev.text }}</div>
             {% if ev.quote %}
-            <blockquote class="mt-1 border-l-2 border-amber-500/30 pl-2 text-[11px] italic leading-relaxed text-slate-500">“{{ ev.quote }}”</blockquote>
+            <blockquote class="mt-1 border-l-2 pl-2 text-[11px] italic leading-relaxed" style="border-color:color-mix(in srgb, var(--warn) 40%, transparent); color:var(--faint)">“{{ ev.quote }}”</blockquote>
             {% endif %}
             <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
               {% if ev.url %}
-              <a href="{{ ev.url }}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+              <a href="{{ ev.url }}" target="_blank" rel="noopener" class="text-sky-400 underline underline-offset-2 hover:text-sky-300">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
               {% endif %}
-              {% if ev.page_title %}
-              <span class="text-slate-600">— {{ ev.page_title }}</span>
-              {% endif %}
+              {% if ev.page_title %}<span style="color:var(--faint)">— {{ ev.page_title }}</span>{% endif %}
             </div>
           </div>
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <ul class="mt-2 space-y-2">
+      <ul class="mt-2.5 space-y-2">
         {% for p in sd.pain_points %}
         <li class="flex items-start gap-2.5 text-sm text-slate-300">
-          <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-4 w-4 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
+          <svg class="mt-0.5 h-4 w-4 shrink-0" style="color:var(--warn)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
           {{ p }}
         </li>
         {% endfor %}
@@ -256,51 +298,82 @@
 
     {% if sd.product_mentions %}
     {% set mention_evidence = sd.evidence | selectattr('type', 'equalto', 'product_mention') | list %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Product mentions</div>
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Product mentions</div>
       {% if mention_evidence %}
       <div class="mt-3 flex flex-wrap gap-2">
         {% for ev in mention_evidence[:10] %}
-        <a href="{{ ev.url }}" target="_blank" rel="noopener" class="group rounded-lg bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-inset ring-sky-500/30 transition hover:bg-sky-500/20" title="{{ ev.quote }}">
-          {{ ev.text }}
-          <span class="ml-1 text-[10px] text-sky-500/70 group-hover:text-sky-400">↗</span>
-        </a>
+        <a href="{{ ev.url }}" target="_blank" rel="noopener" class="chip chip--accent !px-2.5 !py-1 transition hover:brightness-110" title="{{ ev.quote }}">{{ ev.text }} <span style="opacity:0.7">↗</span></a>
         {% endfor %}
       </div>
       {% else %}
       <div class="mt-3 flex flex-wrap gap-2">
         {% for m in sd.product_mentions %}
-        <span class="rounded-lg bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-300 ring-1 ring-inset ring-sky-500/30">{{ m }}</span>
+        <span class="chip chip--accent !px-2.5 !py-1">{{ m }}</span>
         {% endfor %}
       </div>
       {% endif %}
     </div>
     {% endif %}
 
-    {% if sd.contact_emails %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+    {# --- Stack signals: tech-fit evidence, same treatment as pain points --- #}
+    {% set stack_evidence = sd.evidence | selectattr('type', 'equalto', 'stack_signal') | list %}
+    {% if stack_evidence %}
+    <div class="panel panel--inset p-5">
       <div class="flex items-center gap-2">
-        <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Emails found</div>
-        {% if sd.contact_emails_ranked %}
-        <span class="text-[10px] text-slate-500">decision-makers first</span>
-        {% endif %}
+        <div class="type-label">Technology signals</div>
+        <span class="text-[11px]" style="color:var(--faint)">TheirStack detections — legacy/cloud infrastructure, weighted into fit score</span>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        {% for ev in stack_evidence %}
+        <a href="{{ ev.url }}" target="_blank" rel="noopener" class="chip chip--accent !px-2.5 !py-1 font-semibold transition hover:brightness-110" title="{{ ev.page_title }}">{{ ev.text }} <span style="opacity:0.7">↗</span></a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if sd.buying_signals %}
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Buying signals</div>
+      <ul class="mt-2.5 space-y-2">
+        {% for ev in sd.evidence | selectattr('type', 'equalto', 'buying_signal') %}
+        <li class="flex items-start gap-2 text-sm">
+          <span class="chip chip--ok mt-0.5 shrink-0">signal</span>
+          <div class="min-w-0 text-slate-300">
+            {{ ev.text }}
+            {% if ev.url %}
+            <a href="{{ ev.url }}" target="_blank" rel="noopener" class="ml-1 text-[11px] text-sky-400 underline underline-offset-2 hover:text-sky-300">source ↗</a>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if sd.contact_emails %}
+    <div class="panel panel--inset p-5">
+      <div class="flex items-center gap-2">
+        <div class="type-label">Emails found</div>
+        {% if sd.contact_emails_ranked %}<span class="text-[11px]" style="color:var(--faint)">decision-makers first</span>{% endif %}
       </div>
       {% if sd.contact_emails_ranked %}
       <div class="mt-3 space-y-1.5">
         {% for r in sd.contact_emails_ranked %}
         <div class="flex flex-wrap items-center gap-2">
-          <a href="mailto:{{ r.email }}" class="rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-xs font-medium {{ 'text-emerald-300 border-emerald-700/40' if r.priority == 'high' else 'text-indigo-300' if r.priority == 'medium' else 'text-slate-400' }} transition hover:border-indigo-500/50">
+          <a href="mailto:{{ r.email }}" class="rounded-lg border px-2.5 py-1 text-xs font-medium transition hover:brightness-110"
+             style="border-color:{{ 'color-mix(in srgb, var(--ok) 45%, transparent)' if r.priority == 'high' else 'var(--border-strong)' }}; background:{{ 'var(--ok-tint)' if r.priority == 'high' else 'rgba(148,163,184,0.06)' }}; color:{{ 'var(--ok)' if r.priority == 'high' else 'var(--accent)' if r.priority == 'medium' else 'var(--muted)' }}">
             {{ r.email }}
           </a>
           {% if r.priority == 'high' %}
-          <span class="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">decision-maker</span>
+          <span class="chip chip--ok">decision-maker</span>
           {% elif r.priority == 'medium' %}
-          <span class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">functional</span>
+          <span class="chip chip--warn">functional</span>
           {% else %}
-          <span class="rounded-full bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">generic</span>
+          <span class="chip">generic</span>
           {% endif %}
           {% if r.page_url %}
-          <a href="{{ r.page_url }}" target="_blank" rel="noopener" class="text-[10px] text-slate-600 hover:text-indigo-300 underline underline-offset-2">{{ r.page_url|replace('https://', '')|replace('http://', '')|truncate(24, True) }}</a>
+          <a href="{{ r.page_url }}" target="_blank" rel="noopener" class="text-[10px] underline underline-offset-2 hover:text-sky-300" style="color:var(--faint)">{{ r.page_url|replace('https://', '')|replace('http://', '')|truncate(24, True) }}</a>
           {% endif %}
         </div>
         {% endfor %}
@@ -308,35 +381,61 @@
       {% else %}
       <div class="mt-3 flex flex-wrap gap-2">
         {% for e in sd.contact_emails %}
-        <a href="mailto:{{ e }}" class="rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-xs font-medium text-indigo-300 transition hover:border-indigo-500/50 hover:text-indigo-200">{{ e }}</a>
+        <a href="mailto:{{ e }}" class="chip chip--accent !px-2.5 !py-1 font-semibold">{{ e }}</a>
         {% endfor %}
       </div>
       {% endif %}
     </div>
     {% endif %}
 
-    {% if sd.evidence %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Raw findings (with sources)</div>
-      <ul class="mt-3 space-y-2.5">
-        {% for ev in sd.evidence %}
+    {# --- Pages crawled: the actual list, not just a count --- #}
+    {% if sd.pages_crawled %}
+    {% set n_pages = sd.pages_crawled|length %}
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Pages crawled ({{ n_pages }})</div>
+      <ul class="mt-2.5 space-y-1.5">
+        {% for u in sd.pages_crawled[:6] %}
+        <li class="flex items-center gap-2 text-xs">
+          <svg class="h-3.5 w-3.5 shrink-0" style="color:var(--faint)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+          <a href="{{ u }}" target="_blank" rel="noopener" class="min-w-0 truncate text-sky-400 underline-offset-2 hover:text-sky-300 hover:underline">{{ u|replace('https://', '')|replace('http://', '')|truncate(52, True) }}</a>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if n_pages > 6 %}
+      <div class="expand mt-1" id="pages-exp">
+        <div class="expand__inner">
+          <ul class="space-y-1.5">
+            {% for u in sd.pages_crawled[6:] %}
+            <li class="flex items-center gap-2 text-xs">
+              <svg class="h-3.5 w-3.5 shrink-0" style="color:var(--faint)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+              <a href="{{ u }}" target="_blank" rel="noopener" class="min-w-0 truncate text-sky-400 underline-offset-2 hover:text-sky-300 hover:underline">{{ u|replace('https://', '')|replace('http://', '')|truncate(52, True) }}</a>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+      <button type="button" class="btn btn--ghost mt-2.5" data-expander aria-controls="pages-exp" aria-expanded="false"
+              data-expand-label="Show all {{ n_pages }} pages" data-collapse-label="Hide pages"
+              style="padding:5px 10px;font-size:12px">Show all {{ n_pages }} pages</button>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# --- Anything not covered by a dedicated section --- #}
+    {% set other_evidence = sd.evidence | rejectattr('type', 'in', ['pain_point', 'product_mention', 'stack_signal', 'buying_signal', 'summary', 'email']) | list %}
+    {% if other_evidence %}
+    <div class="panel panel--inset p-5">
+      <div class="type-label">Other findings</div>
+      <ul class="mt-2.5 space-y-2.5">
+        {% for ev in other_evidence %}
         <li class="flex items-start justify-between gap-3 text-sm">
           <div class="min-w-0">
-            {% if ev.type == 'buying_signal' %}
-            <span class="mr-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-inset ring-emerald-500/30">{{ ev.type }}</span>
-            {% else %}
-            <span class="mr-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ ev.type }}</span>
-            {% endif %}
+            <span class="chip mr-2">{{ ev.type }}</span>
             <span class="text-slate-300">{{ ev.text }}</span>
-            {% if ev.quote %}
-            <div class="mt-1 text-xs italic text-slate-500">“{{ ev.quote }}”</div>
-            {% endif %}
-            {% if ev.page_title %}
-            <div class="mt-0.5 text-[10px] text-slate-600">{{ ev.page_title }}</div>
-            {% endif %}
+            {% if ev.quote %}<div class="mt-1 text-xs italic" style="color:var(--faint)">“{{ ev.quote }}”</div>{% endif %}
           </div>
           {% if ev.url %}
-          <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+          <a href="{{ ev.url }}" target="_blank" rel="noopener" class="shrink-0 text-xs text-sky-400 underline underline-offset-2 hover:text-sky-300">{{ ev.url|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
           {% endif %}
         </li>
         {% endfor %}
@@ -345,54 +444,57 @@
     {% endif %}
   </div>
 </section>
+
+{# ---------- Tech stack ---------- #}
+{% if lead.tech_stack %}
+<section class="mt-8" data-reveal>
+  <div class="mb-3"><h2 class="type-heading">Tech stack</h2></div>
+  <div class="panel panel--inset p-5">
+    <div class="flex flex-wrap gap-2">
+      {% for t in lead.tech_stack %}
+      <span class="chip !px-2.5 !py-1">{{ t }}</span>
+      {% endfor %}
+    </div>
+  </div>
+</section>
 {% endif %}
 
-{# ---------- Draft ---------- #}
-<section class="mt-8">
-  <div class="flex items-center justify-between">
-    <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-500">Outreach draft</h2>
-    <a href="/drafts" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">All drafts →</a>
+{# ---------- Outreach draft ---------- #}
+<section class="mt-8" data-reveal>
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="type-heading">Outreach draft</h2>
+    <a href="/drafts" class="text-xs font-medium text-sky-400 hover:text-sky-300">All drafts →</a>
   </div>
-  <div class="mt-3">
+  <div>
     {% if draft %}
-    <div class="rounded-xl border border-slate-800 bg-slate-900/60">
-      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-4">
-        <div class="text-sm font-semibold text-slate-100">{{ draft.subject|default('(no subject)') }}</div>
+    <div class="panel overflow-hidden">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4" style="border-color:var(--border)">
+        <div class="text-sm font-semibold text-slate-100">{{ draft.subject if draft.subject is not none else '(no subject)' }}</div>
         <div class="flex items-center gap-2">
-          <span class="text-xs text-slate-500">{{ draft.created_at|fmt_dt }}</span>
+          <span class="type-meta">{{ draft.created_at|fmt_dt }}</span>
           <button
             onclick="copyDraft('{{ draft.id }}', this)"
-            class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700/60"
+            class="btn btn--ghost"
+            data-press
+            style="padding:6px 12px;font-size:12px"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             Copy
           </button>
         </div>
       </div>
-      <div id="draft-body-{{ draft.id }}" class="prose-pre px-5 py-4 text-sm leading-relaxed text-slate-300">{{ draft.email_body }}</div>
+      <div id="draft-body-{{ draft.id }}" class="prose-pre px-5 py-4 text-sm leading-relaxed" style="color:var(--text); background:var(--panel-2)">{{ draft.email_body }}</div>
     </div>
     {% elif lead.status == 'approved' %}
-    <div class="rounded-xl border border-dashed border-slate-800 px-5 py-10 text-center text-sm text-slate-500">
+    <div class="empty">
       Email will be drafted automatically for this approved lead.
     </div>
     {% else %}
-    <div class="rounded-xl border border-dashed border-slate-800 px-5 py-10 text-center text-sm text-slate-500">
+    <div class="empty">
       No draft yet — approve this lead to generate one.
     </div>
     {% endif %}
   </div>
 </section>
-
-<script>
-  function copyDraft(id, btn) {
-    const el = document.getElementById('draft-body-' + id);
-    if (!el) return;
-    navigator.clipboard.writeText(el.innerText).then(() => {
-      const original = btn.innerHTML;
-      btn.innerHTML = '<span class="text-emerald-300">Copied!</span>';
-      setTimeout(() => { btn.innerHTML = original; }, 1500);
-    });
-  }
-</script>
 
 {% endblock %}

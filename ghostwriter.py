@@ -14,7 +14,7 @@ from typing import Any
 import database as db
 from llm import chat_json, load_prompt
 
-GHOSTWRITER_MAX_TOKENS = 450
+GHOSTWRITER_MAX_TOKENS = 700
 
 
 def ghostwrite_for_lead(lead: dict[str, Any]) -> dict[str, Any]:
