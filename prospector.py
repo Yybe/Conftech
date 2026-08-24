@@ -23,16 +23,25 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
-
 import cache
 import database as db
 from llm import chat, load_prompt, parse_json
+from search import (
+    extract_emails_from_text,
+    resolve_official_website,
+    search_contacts_for_domain,
+    web_search,
+)
 
 load_dotenv()
 
 THEIRSTACK_URL = "https://api.theirstack.com/v1/companies/search"
 SERPER_URL = "https://google.serper.dev/search"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+", re.IGNORECASE)
+serper_search = web_search
+extract_emails = extract_emails_from_text
+
+
 
 # --- Company classification (poor cold-outreach targets) ---------------------
 # Decided ONLY from publicly available metadata TheirStack returns (employee
@@ -236,35 +245,8 @@ def search_theirstack(payload: dict) -> dict:
     return resp.json()
 
 
-@cache.cached("serper", ttl_days=30)
-def serper_search(query: str) -> dict:
-    """Google search via Serper. `query` is string -> hashed payload."""
-    payload = {"q": query, "num": 10}
-    resp = requests.post(
-        SERPER_URL,
-        headers={
-            "X-API-KEY": os.getenv("SERPER_API_KEY", ""),
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Serper {resp.status_code}: {resp.text[:300]}")
-    return resp.json()
+# --- Web search fallback discovery (zero-auth DuckDuckGo + Serper) -----------
 
-
-def extract_emails(text: str) -> list[str]:
-    """Deduplicated emails from an arbitrary text blob."""
-    seen: set[str] = set()
-    for m in EMAIL_RE.findall(text):
-        lower = m.lower()
-        if not lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
-            seen.add(lower)
-    return sorted(seen)
-
-
-# --- Serper fallback discovery (when TheirStack credits are exhausted) --------
 #
 # Google SERP cannot match structured tech stacks the way TheirStack does, so
 # this is a lower-precision path: it extracts LinkedIn company pages for
@@ -320,30 +302,11 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
     resolved: list[dict[str, Any]] = []
     for co in companies:
         name = co.get("name") or ""
-        try:
-            sr = serper_search(f'"{name}" official website -linkedin.com -facebook.com -twitter.com -instagram.com')
-        except Exception as exc:
-            print(f"[prospector] Serper domain lookup failed for {name}: {exc}")
-            continue
-        domain = ""
-        for item in sr.get("organic", []) or []:
-            link = str(item.get("link") or "")
-            host = urllib.parse.urlparse(link).netloc.lower()
-            if not host or any(s in host for s in (
-                    "linkedin.com", "facebook.com", "twitter.com", "instagram.com",
-                    "youtube.com", "crunchbase.com", "glassdoor.com", "wikipedia.org",
-                    "zoominfo.com", "dnb.com", "hoovers", "bloomberg.com", "forbes.com",
-                    "buzzfile.com", "bizapedia.com", "data.leadiq.com", "craft.co",
-                    "theorg.com", "rocketreach.co", "apollo.io", "signalhire.com",
-                    "linkedin.cn", "yelp.com", "trustpilot.com")):
-                continue
-            if host.startswith("www."):
-                host = host[4:]
-            domain = host
-            break
+        domain = resolve_official_website(name)
         if not domain:
-            print(f"[prospector] Serper could not resolve domain for {name}; skipping")
+            print(f"[prospector] Web search could not resolve domain for {name}; skipping")
             continue
+
         # Reject a resolved domain that has zero textual overlap with the
         # company name - it's almost certainly a directory/aggregator page
         # (e.g. "Pillar Manufacturing" resolving to zoominfo.com). Family
@@ -530,15 +493,9 @@ def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
         if not website:
             continue
 
-        emails: set[str] = set()
-        linkedin = co.get("linkedin_url")
-        for q in (f'"{domain}" email contact',):
-            try:
-                sr = serper_search(q)
-                for item in sr.get("organic", []) or []:
-                    emails.update(extract_emails(item.get("title", "") + " " + item.get("snippet", "")))
-            except Exception as exc:
-                print(f"[prospector] Serper failed for {domain}: {exc}")
+        # Multi-query contact enrichment (zero-auth DuckDuckGo + Serper fallback)
+        emails: set[str] = set(search_contacts_for_domain(domain, name))
+
 
         tech_stack = (co.get("technology_names") or co.get("technologies_found") or [])
         lead = db.insert_lead(

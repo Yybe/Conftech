@@ -42,8 +42,10 @@ from dotenv import load_dotenv
 import cache
 import database as db
 from llm import chat_json, load_prompt
+from search import search_contacts_for_domain
 
 load_dotenv()
+
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+", re.IGNORECASE)
 USER_AGENT = (
@@ -469,9 +471,22 @@ def _finalize(
     summaries = [e["text"] for e in evidence if e["type"] == "summary"]
     buying_signals = [e["text"] for e in evidence if e["type"] == "buying_signal"]
 
+    # If no on-page emails were found, enrich via zero-auth web search
+    if not emails_by_url:
+        parsed_domain = urlparse(url).netloc.lower()
+        if parsed_domain.startswith("www."):
+            parsed_domain = parsed_domain[4:]
+        try:
+            discovered_emails = search_contacts_for_domain(parsed_domain)
+            for em in discovered_emails:
+                emails_by_url.append((url, em))
+        except Exception as exc:
+            print(f"[researcher] Contact search fallback failed for {url}: {exc}")
+
     # Ranked emails: decision-makers first, generics kept as low priority.
     title_by_url = {p["url"]: p.get("title", "") for p in pages}
     ranked = rank_emails(emails_by_url)
+
     for r in ranked:
         r["page_title"] = title_by_url.get(r["page_url"], "")
     contact_emails = [r["email"] for r in ranked]
