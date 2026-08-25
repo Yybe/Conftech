@@ -64,7 +64,13 @@ def set(namespace: str, payload: dict, data) -> None:
 
 
 def cached(namespace: str, ttl_days: float | None = None):
-    """Decorator: `@cached("theirstack")` around fn(payload: dict) -> response dict."""
+    """Decorator: `@cached("theirstack")` around fn(payload: dict) -> response dict.
+
+    Only writes the cache when the wrapped function returns successfully -
+    exceptions (e.g. `SerperQuotaError`) propagate AND leave the cache
+    untouched, so a transient failure does not get frozen as a successful
+    empty result for the TTL duration.
+    """
 
     def decorator(fn):
         def wrapper(payload: dict, **kwargs):

@@ -15,6 +15,7 @@ Pages:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,129 @@ from pydantic import BaseModel
 
 import database as db
 
+# Request bodies live at module level: `from __future__ import annotations`
+# turns annotations into strings, and models defined inside build_app() can't
+# be resolved from module scope when FastAPI/Pydantic builds the OpenAPI schema
+# (PydanticUserError: ... not fully defined -> /openapi.json 500).
+class PipelineRequest(BaseModel):
+    target_product: str
+    limit: int = 10
+
+
+class StatusUpdate(BaseModel):
+    status: str  # approved | rejected
+
+
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+
+
+# --- Per-incident guidance ("what to do") -----------------------------------
+# When the pipeline hits an upstream limit (TheirStack 402, Serper 400 quoted
+# query, LLM 500, ...) we surface a SPECIFIC fix hint in the web banner instead
+# of a generic "something went wrong". Adding a new upstream just means adding
+# a new regex here.
+
+_INCIDENT_HINTS: list[tuple[str, str]] = [
+    # (regex matched against incident.error / incident.message, friendly hint)
+    (r"theirstack.*402|402.*theirstack|theirstack.*no credits|theirstack.*payment",
+     "TheirStack returned 402 (no credits). Add credits at theirstack.com or wait until the monthly reset."),
+    (r"theirstack.*422|422.*theirstack",
+     "TheirStack rejected the search payload (422). The prospector's tech slugs are no longer in TheirStack's catalog; the next run will retry with the keyword fallback."),
+    (r"serper.*pattern not allowed|pattern not allowed.*serper|serper.*400",
+     "Serper free tier rejected this query (\"pattern not allowed for free accounts\"). DuckDuckGo is the primary search; Serper is fallback only. The query is fine - just retry later or upgrade Serper."),
+    (r"serper.*429|429.*serper",
+     "Serper free tier is rate-limited (429). The pipeline already retried; wait a few minutes before running again, or upgrade."),
+    (r"no module named ['\"]ddgs|no module named ['\"]duckduckgo_search",
+     "DuckDuckGo is not importable in this Python environment. Start the server with `.venv\\Scripts\\python.exe app.py serve` (not `py app.py serve`) so the ddgs package loads."),
+    (r"llm gateway 5\d\d|gateway 500|gateway 502|gateway 503",
+     "The LLM gateway returned a 5xx. All configured models failed; this is an upstream outage, not a bug. Try again in a few minutes."),
+    (r"llm gateway 429|gateway 429",
+     "The LLM gateway is rate-limiting this account. Wait a few minutes before running again."),
+    (r"no payment method|creditserror",
+     "The OpenCode Zen account on this key has no payment method. The free models (mimo-v2.5-free, hy3-free, nemotron-3-ultra-free) still work; paid models like grok-build-0.1 do not."),
+    (r"gmi-serving|api\.gmi-serving\.com|minimax",
+     "The primary LLM (GMI Cloud) failed. The pipeline should have fallen back to the OpenCode Zen chain automatically; check the chain order in llm.py / .env."),
+    (r"model .* is not supported|model .* unavailable|endpoint is unavailable",
+     "A model in the configured chain is currently unavailable. The pipeline should have fallen back to the next model automatically; if it didn't, edit LLM_MODEL / LLM_FALLBACK_MODEL in .env to a known-working free model."),
+    (r"already exist in the database",
+     "All companies the prospector found for this target are already in your database (status: pending_review or rejected). Try a different target product, a higher limit, or a more specific search term."),
+    (r"no leads located",
+     "The prospector's upstream search returned zero results for this target. The target text might be too specific or misspelled. Try a broader product name or a higher limit."),
+]
+
+
+def hint_for(error_text: str) -> str:
+    """Return the matching user-friendly hint for an upstream error, or ''."""
+    if not error_text:
+        return ""
+    for pattern, hint in _INCIDENT_HINTS:
+        if re.search(pattern, error_text, re.IGNORECASE):
+            return hint
+    return ""
+
+
+def classify_incident_kind(error_text: str) -> str:
+    """Bucket an incident into a stable kind for analytics + UI grouping."""
+    if not error_text:
+        return "unknown"
+    low = error_text.lower()
+    if "theirstack" in low or "their stack" in low:
+        if "402" in low or "no credits" in low or "payment" in low:
+            return "theirstack_402"
+        if "422" in low:
+            return "theirstack_422"
+        return "theirstack_other"
+    if "serper" in low:
+        if "429" in low:
+            return "serper_429"
+        if "pattern not allowed" in low or "400" in low:
+            return "serper_quoted_query"
+        return "serper_other"
+    if "no module named" in low and ("ddgs" in low or "duckduckgo" in low):
+        return "ddgs_missing"
+    if "llm gateway" in low or "model" in low and "not supported" in low:
+        if "5" in low.split("gateway ", 1)[-1][:1]:
+            return "llm_5xx"
+        if "429" in low:
+            return "llm_rate_limit"
+        if "no payment" in low or "creditserror" in low:
+            return "llm_payment_required"
+        return "llm_other"
+    return "other"
+
+
+def _banner_payload() -> dict[str, Any] | None:
+    """Return the data the templates need to render the persistent error
+    banner, or None when there's nothing to show."""
+    if _JOB_STATE.get("running"):
+        return None
+    if _JOB_STATE.get("acknowledged"):
+        return None
+    incidents = _JOB_STATE.get("incidents") or []
+    error = _JOB_STATE.get("error")
+    if not incidents and not error:
+        return None
+    # Pick the most-severe incident for the headline; everything else is
+    # listed in `incidents` for the expandable section.
+    headline = None
+    if incidents:
+        first = incidents[0]
+        headline = {
+            "kind": first.get("kind"),
+            "source": first.get("source"),
+            "stage": first.get("stage"),
+            "error": first.get("error"),
+        }
+    return {
+        "headline": headline,
+        "incidents": incidents,
+        "error": error,
+        "message": _JOB_STATE.get("message"),
+        "kind": _JOB_STATE.get("last_error_kind"),
+        "hint": _JOB_STATE.get("last_error_hint") or "",
+    }
 
 # --- Presentation helpers (exposed to templates as Jinja2 filters) -----------
 
@@ -97,9 +218,19 @@ def _normalize_draft(row: dict[str, Any]) -> dict[str, Any]:
 
 # --- Pipeline job tracking (in-memory; single-user local tool) ----------------
 # The UI polls /api/job/status so the user can see what the background
-# pipeline run is doing instead of staring at a blank redirect.
+# pipeline run is doing instead of staring at a blank redirect. We also keep
+# `incidents` and `last_error_kind` around so when the run finishes with a
+# problem (LLM 5xx, TheirStack 402, Serper 400, ...) the banner stays red
+# and points at the specific failure with a fix hint, instead of silently
+# flipping back to "no new leads found".
 
-_JOB_STATE: dict[str, Any] = {"running": False}
+_JOB_STATE: dict[str, Any] = {
+    "running": False,
+    "incidents": [],
+    "last_error_kind": None,
+    "last_error_hint": None,
+    "acknowledged": False,
+}
 
 
 def _job_start(target_product: str, limit: int) -> None:
@@ -115,7 +246,13 @@ def _job_start(target_product: str, limit: int) -> None:
             "stage_label": "Finding companies",
             "message": "",
             "leads_found": 0,
+            "leads_known": 0,
+            "leads_excluded": 0,
             "error": None,
+            "incidents": [],
+            "last_error_kind": None,
+            "last_error_hint": None,
+            "acknowledged": False,
         }
     )
 
@@ -126,30 +263,131 @@ def _job_update(stage: str, stage_label: str, **extra: Any) -> None:
     _JOB_STATE.update(extra)
 
 
+def _record_incident(stage: str, source: str, exc: Exception) -> None:
+    """Append a structured incident so the UI can show the SPECIFIC failure
+    (TheirStack 402, Serper 400, LLM 500, ...) instead of a generic message."""
+    msg = str(exc)
+    kind = classify_incident_kind(f"{source} {msg}")
+    incident = {
+        "stage": stage,
+        "source": source,
+        "error": msg,
+        "kind": kind,
+        "ts": datetime.now().isoformat(),
+    }
+    _JOB_STATE.setdefault("incidents", []).append(incident)
+    _JOB_STATE["last_error_kind"] = kind
+    if not _JOB_STATE.get("last_error_hint"):
+        _JOB_STATE["last_error_hint"] = hint_for(msg) or hint_for(source)
+
+
 def _job_finish(error: str | None = None) -> None:
     _JOB_STATE["running"] = False
     _JOB_STATE["finished_at"] = datetime.now().isoformat()
     _JOB_STATE["error"] = error
+    # If the job ended with at least one incident, derive a single-line summary
+    # the UI can show in the banner even when no exception was re-raised
+    # (e.g. prospector hit a 402 internally and returned an empty result).
+    if _JOB_STATE.get("incidents") and not error:
+        kinds = sorted({i["kind"] for i in _JOB_STATE["incidents"]})
+        _JOB_STATE["error"] = (
+            f"Pipeline hit: {', '.join(kinds)}. See banner for details."
+        )
+        if not _JOB_STATE.get("last_error_hint"):
+            _JOB_STATE["last_error_hint"] = _JOB_STATE["incidents"][0].get("error", "")
 
 
 def _run_pipeline_bg(target_product: str, limit: int) -> None:
-    from prospector import prospect
+    from prospector import NoNewLeadsError, prospect
     from researcher import research
     from scorer import score
+    from search import SerperQuotaError
 
     _job_start(target_product, limit)
     try:
         _job_update("prospecting", "Finding companies")
-        leads = prospect(target_product, limit=limit)
-        _job_update("prospecting", "Finding companies", leads_found=len(leads))
-        if not leads:
-            _job_update("prospecting", "Finding companies", message="No new leads found")
+        try:
+            result = prospect(target_product, limit=limit)
+        except SerperQuotaError as exc:
+            _record_incident("prospecting", "serper", exc)
+            _job_finish(error=str(exc))
+            return
+        except Exception as exc:
+            _record_incident("prospecting", "prospector", exc)
+            raise
+
+        new_leads = result["new"]
+        known_leads = result["known"]
+        excluded = result["excluded"]
+        _JOB_STATE["leads_found"] = len(new_leads)
+        _JOB_STATE["leads_known"] = len(known_leads)
+        _JOB_STATE["leads_excluded"] = len(excluded)
+
+        if not new_leads:
+            # prospect() raised NoNewLeadsError before we got here only if it
+            # also found companies; if even the search returned nothing, this
+            # is a quiet no-op. Either way, the message should be honest.
+            if known_leads:
+                _job_update(
+                    "prospecting",
+                    "Finding companies",
+                    message=(
+                        f"No new leads for '{target_product}' - all "
+                        f"{len(known_leads)} companies already in DB. "
+                        "Try a different target or increase the limit."
+                    ),
+                )
+            else:
+                _job_update(
+                    "prospecting",
+                    "Finding companies",
+                    message=(
+                        f"No leads located for '{target_product}'. "
+                        "Upstream search returned no matches."
+                    ),
+                )
+            _job_finish()
+            print(f"[web] pipeline done (no new leads): {db.count_by_status()}")
+            return
+
+        _job_update(
+            "prospecting",
+            "Finding companies",
+            message=(
+                f"Found {len(new_leads)} new + {len(known_leads)} already in DB "
+                f"for '{target_product}'"
+            ),
+        )
         _job_update("researching", "Deep-researching websites")
-        research(limit=len(leads) or 10)
+        try:
+            research(limit=len(new_leads))
+        except Exception as exc:
+            _record_incident("researching", "researcher", exc)
+            raise
         _job_update("scoring", "Scoring fit")
-        score(limit=len(leads) or 10)
+        try:
+            score(limit=len(new_leads))
+        except Exception as exc:
+            _record_incident("scoring", "scorer", exc)
+            raise
         _job_finish()
         print(f"[web] pipeline done: {db.count_by_status()}")
+    except NoNewLeadsError as exc:
+        # prospector already printed each DUPLICATE with its current status; we
+        # just need the headline count for the web banner. The message format
+        # is "All N companies found for '...' already exist in the database..."
+        msg = str(exc)
+        import re as _re
+        m = _re.search(r"All (\d+) companies", msg)
+        if m:
+            _JOB_STATE["leads_known"] = int(m.group(1))
+        _job_update(
+            "prospecting",
+            "Finding companies",
+            message=msg,
+        )
+        _job_finish(error=msg)
+        print(f"[web] no new leads: {msg}")
     except Exception as exc:
         _job_finish(error=str(exc))
         print(f"[web] pipeline job failed: {exc}")
@@ -169,6 +407,23 @@ def _draft_email_bg(lead_id: str) -> None:
 # --- App factory --------------------------------------------------------------
 
 def build_app() -> FastAPI:
+    # Startup probe: print exactly which search backend loaded. A common
+    # breakage is running `py app.py serve` (Anaconda Python) instead of
+    # `.venv\Scripts\python.exe app.py serve`; the Anaconda interpreter has
+    # no `ddgs` / `duckduckgo_search` and the server silently falls back to
+    # Serper-only, which immediately hits the "Query pattern not allowed"
+    # free-tier rejection. Make this loud.
+    try:
+        from ddgs import DDGS as _DDGS  # type: ignore
+        ddgs_ver = getattr(_DDGS, "__version__", "unknown")
+        print(f"[startup] Search backend: DuckDuckGo (ddgs {ddgs_ver}) + Serper fallback")
+    except Exception as exc:
+        print(
+            "[startup] WARNING: ddgs not importable - DuckDuckGo search will be "
+            f"skipped ({exc}). Run the server with `.venv\\Scripts\\python.exe "
+            "app.py serve` so the ddgs package actually loads."
+        )
+
     app = FastAPI(title="Conftech", version="0.2.0")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -199,6 +454,7 @@ def build_app() -> FastAPI:
                 recent_leads.append(lead)
         recent_leads.sort(key=lambda l: (l.get("fit_score") is None, l.get("fit_score") or 0), reverse=True)
         recent_drafts = [_normalize_draft(d) for d in db.list_drafts(limit=5)]
+        job_banner = _banner_payload()
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -209,6 +465,7 @@ def build_app() -> FastAPI:
                 "recent_leads": recent_leads[:8],
                 "recent_drafts": recent_drafts,
                 "active": "dashboard",
+                "job_banner": job_banner,
             },
         )
 
@@ -229,6 +486,7 @@ def build_app() -> FastAPI:
         counts = db.count_by_status()
         products = db.list_target_products()
         notice = request.query_params.get("notice", "")
+        job_banner = _banner_payload()
         return templates.TemplateResponse(
             request,
             "leads.html",
@@ -242,6 +500,7 @@ def build_app() -> FastAPI:
                 "target_product": target_product,
                 "notice": notice,
                 "active": "leads",
+                "job_banner": job_banner,
             },
         )
 
@@ -254,6 +513,7 @@ def build_app() -> FastAPI:
             raise HTTPException(404, "lead not found")
         draft = db.get_draft_for_lead(lead_id)
         counts = db.count_by_status()
+        job_banner = _banner_payload()
         return templates.TemplateResponse(
             request,
             "lead_detail.html",
@@ -262,6 +522,7 @@ def build_app() -> FastAPI:
                 "draft": draft,
                 "counts": counts,
                 "active": "leads",
+                "job_banner": job_banner,
             },
         )
 
@@ -289,10 +550,11 @@ def build_app() -> FastAPI:
     def drafts_page(request: Request):
         drafts = [_normalize_draft(d) for d in db.list_drafts(limit=100)]
         counts = db.count_by_status()
+        job_banner = _banner_payload()
         return templates.TemplateResponse(
             request,
             "drafts.html",
-            {"drafts": drafts, "counts": counts, "active": "drafts"},
+            {"drafts": drafts, "counts": counts, "active": "drafts", "job_banner": job_banner},
         )
 
     @app.post("/drafts/{draft_id}/delete")
@@ -313,13 +575,6 @@ def build_app() -> FastAPI:
 
     # --- JSON API (kept from v0.1) ------------------------------------------
 
-    class PipelineRequest(BaseModel):
-        target_product: str
-        limit: int = 10
-
-    class StatusUpdate(BaseModel):
-        status: str  # approved | rejected
-
     @app.post("/api/pipeline")
     def api_pipeline(req: PipelineRequest, bg: BackgroundTasks):
         bg.add_task(_run_pipeline_bg, req.target_product, req.limit)
@@ -338,6 +593,27 @@ def build_app() -> FastAPI:
     @app.get("/api/job/status")
     def api_job_status():
         return dict(_JOB_STATE)
+
+    @app.get("/api/job/last_error")
+    def api_job_last_error():
+        """Return the most recent completed job's error + incidents for the
+        web banner to keep showing until the user dismisses it."""
+        return {
+            "running": _JOB_STATE.get("running", False),
+            "error": _JOB_STATE.get("error"),
+            "message": _JOB_STATE.get("message"),
+            "incidents": list(_JOB_STATE.get("incidents") or []),
+            "last_error_kind": _JOB_STATE.get("last_error_kind"),
+            "last_error_hint": _JOB_STATE.get("last_error_hint"),
+            "acknowledged": _JOB_STATE.get("acknowledged", False),
+            "finished_at": _JOB_STATE.get("finished_at"),
+        }
+
+    @app.post("/api/job/ack")
+    def api_job_ack():
+        """Mark the current error banner as acknowledged so it stops showing."""
+        _JOB_STATE["acknowledged"] = True
+        return {"acknowledged": True}
 
     @app.get("/api/leads/{lead_id}")
     def api_get_lead(lead_id: str):

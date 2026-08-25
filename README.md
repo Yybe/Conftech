@@ -22,15 +22,22 @@ before it exists.
                                     outreach_drafts (emails)
 ```
 
-LLM routing: every agent call tries **DeepSeek V4 Flash Free** first
-(`deepseek-v4-flash-free`) on the OpenCode Zen gateway (`https://opencode.ai/zen/v1`)
-and automatically retries with **MiMo V2.5 Free** (`mimo-v2.5-free`) on failure,
-rate limit, empty reply, or invalid JSON. Hidden reasoning is disabled
-(`reasoning_effort: "none"` — DeepSeek V4 is a reasoning model and would
-otherwise burn its token budget on `reasoning_content` before answering);
-override with `LLM_MODEL` / `LLM_FALLBACK_MODEL` in `.env`, re-enable reasoning
-with `LLM_REASONING_EFFORT=low|medium|high`, or switch the gateway with
-`OPENROUTER_BASE_URL`.
+LLM routing: every agent call tries a chain of free models on the OpenCode
+Zen gateway (`https://opencode.ai/zen/v1`), in order:
+**`mimo-v2.5-free` → `hy3-free` → `nemotron-3-ultra-free`**. On any failure
+(5xx, rate limit, empty content, invalid JSON) the call automatically falls
+through to the next model. Hidden reasoning is disabled
+(`reasoning_effort: "none"` — these models are reasoning models and would
+otherwise burn their token budget on `reasoning_content` before answering);
+override with `LLM_MODEL` / `LLM_FALLBACK_MODEL` / `LLM_FALLBACK_MODEL_2` in
+`.env`, re-enable reasoning with `LLM_REASONING_EFFORT=low|medium|high`, or
+switch the gateway with `OPENROUTER_BASE_URL`.
+
+> **Avoid these models right now:** `muse-spark-1.2-contributor-free` (returns
+> 500), `deepseek-v4-flash-free` (currently "Model is unavailable"),
+> `x-preview-f-free` (currently "Endpoint unavailable"), and the paid
+> `grok-build-0.1` / `kimi-k2.5` (require a payment method on the OpenCode
+> workspace — the free models above do not).
 
 ## Status flow
 
@@ -133,7 +140,15 @@ python app.py ghostwrite
 python app.py watch --interval 60
 
 # Web UI + REST API (open http://localhost:8000)
-python app.py serve --port 8000
+# IMPORTANT on Windows: run with the project's venv Python so the `ddgs`
+# package actually loads. Using `py` resolves to the Anaconda install on
+# this machine, which has no ddgs, and the server silently falls back to
+# Serper-only - which then immediately hits the "Query pattern not allowed
+# for free accounts" 400. Use `serve.bat` (one-liner wrapper) or invoke
+# .venv\Scripts\python.exe directly:
+serve.bat
+#   - or -
+.venv\Scripts\python.exe -m uvicorn webapp:build_app --factory --port 8000
 ```
 
 ## Web UI

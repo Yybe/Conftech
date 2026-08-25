@@ -72,6 +72,48 @@
 </div>
 {% endif %}
 
+{# ---------- Persistent red error banner (block + dismiss) ---------- #}
+{% if job_banner %}
+<div class="mt-5 rounded-xl border px-4 py-4 text-sm" data-reveal
+     style="border-color:#7f1d1d; background:rgba(127,29,29,0.18); color:#fecaca">
+  <div class="flex items-start gap-3">
+    <svg class="mt-0.5 h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+    <div class="min-w-0 flex-1">
+      <div class="text-sm font-semibold" style="color:#fda4af">
+        Pipeline stopped — {{ job_banner.kind or 'upstream error' }}
+      </div>
+      {% if job_banner.headline %}
+      <div class="mt-1 text-xs" style="color:#fecaca">
+        <span class="font-semibold">{{ job_banner.headline.source }}</span>
+        {% if job_banner.headline.stage %} · {{ job_banner.headline.stage }}{% endif %}
+        <div class="mt-0.5 font-mono text-[11px]" style="color:#fca5a5">{{ job_banner.headline.error }}</div>
+      </div>
+      {% endif %}
+      {% if job_banner.hint %}
+      <div class="mt-2 text-xs font-medium" style="color:#fecaca">
+        <span class="font-semibold uppercase tracking-wider" style="color:#fda4af">What to do:</span>
+        {{ job_banner.hint }}
+      </div>
+      {% endif %}
+      {% if job_banner.incidents and job_banner.incidents|length > 1 %}
+      <details class="mt-2 text-xs">
+        <summary class="cursor-pointer font-medium" style="color:#fda4af">{{ job_banner.incidents|length }} incident(s)</summary>
+        <ul class="mt-1.5 space-y-1">
+          {% for inc in job_banner.incidents %}
+          <li><span class="font-mono text-[11px]" style="color:#fca5a5">{{ inc.kind }} · {{ inc.source }} — {{ inc.error }}</span></li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </div>
+    <form method="post" action="/api/job/ack" onsubmit="event.preventDefault(); fetch('/api/job/ack',{method:'POST'}).then(()=>location.reload());">
+      <button type="submit" class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold"
+              style="background:rgba(255,255,255,0.08); color:#fda4af" title="Dismiss this error">Dismiss</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 {# ---------- Status filter (segmented) ---------- #}
 <div class="mt-5 flex flex-wrap items-center gap-3" data-reveal>
   <div class="seg">

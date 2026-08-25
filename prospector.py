@@ -35,6 +35,12 @@ from search import (
 
 load_dotenv()
 
+
+class NoNewLeadsError(RuntimeError):
+    """Raised when prospect() found companies but every one of them is already
+    in the database. The web layer surfaces this as 'no new leads for
+    {target_product}' instead of pretending the run was a success."""
+
 THEIRSTACK_URL = "https://api.theirstack.com/v1/companies/search"
 SERPER_URL = "https://google.serper.dev/search"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+", re.IGNORECASE)
@@ -340,8 +346,9 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
 
 def build_queries(target_product: str) -> dict[str, list[str]]:
     """Use the LLM (prompts/prospector.md) to plan TheirStack tech filters +
-    description patterns + Serper queries. Falls back to keyword-based plans
-    on any LLM failure (DeepSeek -> Gemma -> deterministic)."""
+    description patterns + Serper queries. Falls back to a target-aware
+    keyword plan on any LLM failure so different inputs do not collapse into
+    the same cached TheirStack payload."""
     try:
         plan = parse_json(
             chat(
@@ -357,33 +364,100 @@ def build_queries(target_product: str) -> dict[str, list[str]]:
         }
     except Exception as exc:  # LLM down -> deterministic fallback
         print(f"[prospector] LLM query planning failed ({exc}); using keyword fallback.")
-        # Buyer-first deterministic plan. NEVER use the raw target-product name
-        # as a description pattern: for a service target ("Cloud Migration
-        # Services") that only matches competitor providers. Instead pair
-        # legacy/on-premise infrastructure tech filters (the systems a migration
-        # service REPLACES) with buyer-industry description patterns.
-        return {
-            "technology_slugs": [
-                "vmware-vsphere", "microsoft-hyperv", "oracle-database", "sap",
-                "windows-server", "microsoft-sql-server",
-            ],
-            "description_patterns": [
-                "manufacturing", "logistics", "distribution", "wholesale",
-                "retail chain", "healthcare provider", "family owned",
-                "enterprise resource planning", "on-premise",
-            ],
-            "serper_queries": [
-                'site:linkedin.com/company manufacturing "erp" "on-premise"',
-                '"family owned" manufacturing "legacy systems"',
-                'logistics OR distribution company "data center"',
-            ],
-        }
+        return _keyword_fallback_plan(target_product)
+
+
+# --- Target-aware keyword fallback ------------------------------------------
+# Different target products map to different tech slugs and description
+# patterns so the same hardcoded "cloud migration" payload is not returned
+# for every input. We always pair legacy/buyer tech with buyer-industry
+# description patterns (manufacturing, logistics, distribution, healthcare,
+# retail) - never with the target product name itself, which for service
+# targets only surfaces competing providers.
+
+_BUYER_DESCRIPTION_PATTERNS = (
+    "manufacturing", "logistics", "distribution", "wholesale",
+    "retail chain", "healthcare provider", "family owned",
+    "enterprise resource planning", "on-premise",
+)
+
+# Keyword -> tech slugs to query. Slugs come from TheirStack's catalog and
+# correspond to actual technology installations - the classifier uses them
+# to surface real on-prem enterprise systems.
+_TARGET_TECH_HINTS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (("cloud", "migration", "moderniz", "lift and shift", "lift & shift"),
+     ("vmware-vsphere", "microsoft-hyperv", "oracle-database", "sap",
+      "windows-server", "microsoft-sql-server")),
+    (("cybersecurity", "security", "compliance", "iso 27001", "soc 2", "gdpr", "hipaa"),
+     ("cisco", "fortinet", "palo-alto-networks", "okta", "crowdstrike",
+      "sentinelone", "rapid7", "splunk")),
+    (("license", "cost optim", "software asset", "sam ", "spend"),
+     ("sap", "oracle-database", "microsoft-365", "salesforce", "workday",
+      "servicenow", "jira", "adobe")),
+    (("data", "analytics", "warehouse", "bi "),
+     ("snowflake", "tableau", "looker", "power-bi", "redshift",
+      "teradata", "databricks")),
+    (("devops", "ci/cd", "kubernetes", "container"),
+     ("kubernetes", "docker", "jenkins", "gitlab", "github", "argo-cd",
+      "terraform", "ansible")),
+    (("crm", "sales"),
+     ("salesforce", "hubspot", "zoho-crm", "microsoft-dynamics-365",
+      "pipedrive")),
+]
+
+
+def _keyword_fallback_plan(target_product: str) -> dict[str, list[str]]:
+    """Build a target-aware TheirStack plan when the LLM is unavailable.
+
+    The plan's tech slugs + Serper queries are derived from the target text
+    itself, so different products no longer collide into one cached payload.
+    The description patterns always come from the buyer-industry set
+    regardless of the target (we want BUYERS, not providers).
+    """
+    low = (target_product or "").lower()
+    chosen: tuple[str, ...] = ()
+    for keys, slugs in _TARGET_TECH_HINTS:
+        if any(k in low for k in keys):
+            chosen = slugs
+            break
+    if not chosen:
+        # Generic buyer-tech fallback (still better than the prior hardcoded
+        # migration-only set because it stays out of the cloud-migration cache
+        # namespace entirely via a different first slug).
+        chosen = ("sap", "oracle-database", "microsoft-365", "salesforce",
+                  "windows-server", "vmware-vsphere")
+
+    quoted_target = (target_product or "this service").strip()
+    serper = [
+        f'site:linkedin.com/company manufacturing "{chosen[0]}"',
+        f'"{chosen[0]}" "family owned" -staffing -recruiting',
+        f'logistics OR distribution company "{chosen[0]}"',
+        f'site:linkedin.com/company "{quoted_target}" buyer -provider -consulting',
+    ]
+    return {
+        "technology_slugs": list(chosen),
+        "description_patterns": list(_BUYER_DESCRIPTION_PATTERNS),
+        "serper_queries": serper,
+    }
 
 
 # --- Core flow --------------------------------------------------------------
 
-def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
-    """Run the full prospecting flow. Returns inserted/known leads."""
+def prospect(target_product: str, limit: int = 10) -> dict[str, Any]:
+    """Run the full prospecting flow. Returns:
+
+        {
+            "new":     [lead row dicts that were just inserted as status=raw],
+            "known":   [existing lead row dicts (any status) for the same
+                        domain that were NOT re-inserted],
+            "excluded": [(name, reasons), ...]   # dropped by the classifier
+        }
+
+    Raises:
+        NoNewLeadsError: when upstream search returned companies but every
+        one of them was already in the database. The web layer surfaces this
+        as an honest "no new leads" message instead of a fake success.
+    """
     plan = build_queries(target_product)
     print(f"[prospector] Target: {target_product!r}")
     print(f"[prospector] Tech filters: {plan['technology_slugs'] or '(none)'}")
@@ -484,8 +558,10 @@ def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
         f"{len(excluded)} excluded (not SMB/mid-market targets)"
     )
 
-    # 2) Serper enrichment for each company
-    inserted: list[dict[str, Any]] = []
+    # 2) Split new vs already-known leads BEFORE inserting, so the web layer
+    #    gets an honest count of how many are actually new for this run.
+    new_leads: list[dict[str, Any]] = []
+    known_leads: list[dict[str, Any]] = []
     for co, cls in kept[:limit]:
         domain = (co.get("domain") or "").strip().lower()
         name = co.get("name") or co.get("domain") or "unknown"
@@ -493,10 +569,16 @@ def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
         if not website:
             continue
 
-        # Multi-query contact enrichment (zero-auth DuckDuckGo + Serper fallback)
+        existing = db.find_lead_by_website(website)
+        if existing:
+            known_leads.append(existing)
+            print(
+                f"[prospector] DUPLICATE {name} ({website}) - "
+                f"already in DB as status={existing.get('status')}"
+            )
+            continue
+
         emails: set[str] = set(search_contacts_for_domain(domain, name))
-
-
         tech_stack = (co.get("technology_names") or co.get("technologies_found") or [])
         lead = db.insert_lead(
             company_name=name,
@@ -507,10 +589,20 @@ def prospect(target_product: str, limit: int = 10) -> list[dict[str, Any]]:
             contact_email=sorted(emails)[0] if emails else None,
             company_profile=cls["profile"],
         )
-        inserted.append(lead)
-        print(f"[prospector] saved {name} ({website}) status=raw emails={sorted(emails)}")
+        new_leads.append(lead)
+        print(f"[prospector] NEW {name} ({website}) status=raw emails={sorted(emails)}")
 
-    return inserted
+    if kept and not new_leads:
+        # Upstream search actually found companies, but every one is a
+        # duplicate. Surface this honestly instead of pretending the run
+        # succeeded.
+        raise NoNewLeadsError(
+            f"All {len(known_leads)} companies found for '{target_product}' "
+            "already exist in the database. Try a different target product "
+            "or increase the limit to get a wider search."
+        )
+
+    return {"new": new_leads, "known": known_leads, "excluded": excluded}
 
 
 if __name__ == "__main__":

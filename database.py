@@ -225,6 +225,24 @@ def insert_lead(
     return res.data[0]
 
 
+def find_lead_by_website(website: str) -> dict[str, Any] | None:
+    """Look up an existing lead by exact website URL. Returns the full row
+    (so callers can see the current status) or None if not present.
+
+    Used by the prospector to count NEW vs already-known leads honestly."""
+    if not website:
+        return None
+    res = (
+        get_client()
+        .table("leads")
+        .select("*")
+        .eq("website", website)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 def get_lead(lead_id: str) -> dict[str, Any] | None:
     res = get_client().table("leads").select("*").eq("id", lead_id).limit(1).execute()
     return res.data[0] if res.data else None

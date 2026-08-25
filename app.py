@@ -86,12 +86,18 @@ def watch(interval: int = 60) -> None:
 # --- Pipeline ---------------------------------------------------------------
 
 def run_pipeline(target_product: str, limit: int = 10) -> dict[str, Any]:
-    leads = prospect(target_product, limit=limit)
-    research(limit=len(leads) or 10)
-    score(limit=len(leads) or 10)
+    result = prospect(target_product, limit=limit)
+    new_leads = result["new"]
+    research(limit=len(new_leads) or 10)
+    score(limit=len(new_leads) or 10)
     stats = db.count_by_status()
     print(f"\n[pipeline] done. Status counts: {stats}")
-    return {"prospected": len(leads), "status_counts": stats}
+    return {
+        "prospected": len(new_leads),
+        "known": len(result["known"]),
+        "excluded": len(result["excluded"]),
+        "status_counts": stats,
+    }
 
 
 # --- Web UI / API server -----------------------------------------------------

@@ -61,6 +61,9 @@
         <div id="job-title" class="truncate text-sm font-semibold text-slate-100">Pipeline running…</div>
         <div id="job-stage" class="truncate text-xs" style="color:var(--muted)">Starting</div>
       </div>
+      <button id="job-dismiss" type="button" class="hidden shrink-0 rounded-md px-2 py-1 text-xs font-semibold"
+              style="background:rgba(255,255,255,0.08); color:var(--text-strong)"
+              title="Dismiss this error">Dismiss</button>
       <a href="/leads" class="btn btn--ghost shrink-0" style="padding:6px 12px;font-size:12px">View leads</a>
     </div>
   </div>
@@ -72,24 +75,65 @@
   (function () {
     var banner = document.getElementById('job-banner');
     if (!banner) return;
+    var dismissBtn = document.getElementById('job-dismiss');
+    var lastKind = null;
+
+    function showError(last) {
+      if (!last) return;
+      lastKind = last.last_error_kind || (last.headline && last.headline.kind) || 'error';
+      var title = 'Pipeline stopped — ' + (last.last_error_kind || 'upstream error');
+      var stage = (last.headline && last.headline.error) || last.error || last.message || 'See the red banner on the page for details.';
+      if (last.last_error_hint) stage = stage + '  →  ' + last.last_error_hint;
+      ConftechUI.showJobBanner({ title: title, stage: stage, error: true });
+      if (dismissBtn) dismissBtn.classList.remove('hidden');
+    }
+
+    function showRunning(s) {
+      ConftechUI.showJobBanner({
+        title: 'Pipeline: ' + (s.target_product || '…'),
+        stage: s.stage_label + (s.message ? ' — ' + s.message : ''),
+        error: false
+      });
+      if (dismissBtn) dismissBtn.classList.add('hidden');
+      lastKind = null;
+    }
+
     function poll() {
       fetch('/api/job/status', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(function (s) {
-          if (s && s.running) {
-            ConftechUI.showJobBanner({
-              title: 'Pipeline: ' + (s.target_product || '…'),
-              stage: s.stage_label + (s.message ? ' — ' + s.message : ''),
-              error: false
-            });
-          } else if (s && s.error) {
-            ConftechUI.showJobBanner({ title: 'Pipeline failed', stage: s.error, error: true });
-          } else {
-            ConftechUI.hideJobBanner();
-          }
+          if (s && s.running) { showRunning(s); return; }
+          // Job not running - ask the last_error endpoint so the banner stays
+          // visible until the user clicks Dismiss (or starts a new run).
+          fetch('/api/job/last_error', { cache: 'no-store' })
+            .then(function (r2) { return r2.json(); })
+            .then(function (last) {
+              if (last && !last.acknowledged && (last.error || (last.incidents && last.incidents.length))) {
+                showError(last);
+              } else {
+                ConftechUI.hideJobBanner();
+                if (dismissBtn) dismissBtn.classList.add('hidden');
+                lastKind = null;
+              }
+            })
+            .catch(function () { ConftechUI.hideJobBanner(); });
         })
         .catch(function () { /* server restarting; keep polling */ });
     }
+
+    if (dismissBtn) {
+      dismissBtn.addEventListener('click', function () {
+        fetch('/api/job/ack', { method: 'POST' })
+          .then(function () {
+            ConftechUI.hideJobBanner();
+            dismissBtn.classList.add('hidden');
+            // Reload so any inline red error block on the page also disappears.
+            window.location.reload();
+          })
+          .catch(function () { /* ignore */ });
+      });
+    }
+
     poll();
     setInterval(poll, 3000);
   })();

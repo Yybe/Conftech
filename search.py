@@ -56,8 +56,20 @@ def _search_ddgs(query: str, max_results: int = 10) -> list[dict[str, str]]:
         return []
 
 
+class SerperQuotaError(RuntimeError):
+    """Raised when Serper's free tier rejects the query (400 'pattern not allowed'
+    or 429 rate limit). The caller should treat this as a hard stop for Serper
+    and rely on the primary DDGS path instead. NEVER cache these - doing so
+    locks the failure in for 30 days and the same query keeps failing."""
+
+
 def _search_serper(query: str, max_results: int = 10) -> list[dict[str, str]]:
-    """Query Serper Google search API if API key is present."""
+    """Query Serper Google search API if API key is present.
+
+    Raises `SerperQuotaError` on free-tier 400/429 so the caller can skip the
+    cache layer entirely. Other non-200 responses are still swallowed (logged
+    only) so a transient 5xx doesn't blow up the pipeline.
+    """
     api_key = os.getenv("SERPER_API_KEY", "").strip()
     if not api_key:
         return []
@@ -72,22 +84,29 @@ def _search_serper(query: str, max_results: int = 10) -> list[dict[str, str]]:
             json={"q": query, "num": max_results},
             timeout=20,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            results = []
-            for item in data.get("organic", []):
-                results.append({
-                    "title": str(item.get("title") or ""),
-                    "link": str(item.get("link") or ""),
-                    "snippet": str(item.get("snippet") or ""),
-                })
-            return results
-        else:
-            print(f"[search] Serper HTTP {resp.status_code}: {resp.text[:200]}")
-            return []
     except Exception as exc:
         print(f"[search] Serper search error for '{query}': {exc}")
         return []
+
+    if resp.status_code == 200:
+        data = resp.json()
+        results = []
+        for item in data.get("organic", []):
+            results.append({
+                "title": str(item.get("title") or ""),
+                "link": str(item.get("link") or ""),
+                "snippet": str(item.get("snippet") or ""),
+            })
+        return results
+
+    # Free-tier-rejected query ("Query pattern not allowed for free accounts")
+    # or rate-limited (429) - raise so the caller knows NOT to cache this
+    # response as if it were a successful empty result.
+    if resp.status_code in (400, 429) or "pattern not allowed" in resp.text.lower():
+        raise SerperQuotaError(f"Serper HTTP {resp.status_code}: {resp.text[:200]}")
+
+    print(f"[search] Serper HTTP {resp.status_code}: {resp.text[:200]}")
+    return []
 
 
 @cache.cached("search", ttl_days=30)
@@ -96,18 +115,34 @@ def web_search(query: str, max_results: int = 10) -> dict[str, Any]:
 
     falls back to Serper if configured, returns Serper-compatible dict:
     {"query": query, "organic": [{"title": ..., "link": ..., "snippet": ...}]}
+
+    Quota failures from Serper are propagated via `SerperQuotaError`. The
+    caller's `cache.set` is short-circuited so quota errors never get cached
+    as if they were successful empty results.
     """
     query = query.strip()
     if not query:
         return {"query": "", "organic": []}
 
-    # 1. Try DuckDuckGo
-    results = _search_ddgs(query, max_results=max_results)
+    # 1. Try DuckDuckGo (the primary zero-auth path).
+    try:
+        results = _search_ddgs(query, max_results=max_results)
+    except Exception as exc:
+        print(f"[search] DDGS raised for '{query}': {exc}")
+        results = []
 
-    # 2. Fallback to Serper if DDGS yielded no results
+    # 2. Fallback to Serper ONLY if DDGS returned nothing AND the user opted
+    #    in. Skip caching entirely on the Serper branch so a quota 400/429
+    #    never gets persisted as a successful empty response.
     if not results and os.getenv("SERPER_API_KEY"):
         print(f"[search] DDGS returned 0 results for '{query}', trying Serper fallback")
-        results = _search_serper(query, max_results=max_results)
+        try:
+            results = _search_serper(query, max_results=max_results)
+        except SerperQuotaError as exc:
+            print(f"[search] Serper quota error (NOT cached): {exc}")
+            # Re-raise so the orchestrator can record an incident and show the
+            # user the actual Serper error in the web banner.
+            raise
 
     return {
         "query": query,
