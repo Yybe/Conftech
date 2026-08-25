@@ -56,30 +56,42 @@
         and score them for fit — all in the background.
       </p>
     </div>
-    <form method="post" action="/pipeline/run" class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+    <form method="post" action="/pipeline/run" class="flex w-full flex-col gap-3 sm:w-auto">
+      <div class="flex flex-wrap items-center gap-3">
+        <input
+          type="text"
+          name="target_product"
+          required
+          placeholder="e.g. Cloud Migration Services"
+          class="field min-w-0 flex-1 sm:w-72"
+        >
+        <div class="flex items-center gap-2">
+          <label for="limit" class="text-xs font-medium" style="color:var(--muted)">Limit</label>
+          <input
+            type="number"
+            id="limit"
+            name="limit"
+            value="10"
+            min="1"
+            max="50"
+            class="field w-20"
+          >
+        </div>
+        <button type="submit" class="btn btn--primary" data-press>
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Run pipeline
+        </button>
+      </div>
       <input
         type="text"
-        name="target_product"
-        required
-        placeholder="e.g. Cloud Migration Services"
-        class="field min-w-0 flex-1 sm:w-72"
+        name="buyer_persona"
+        placeholder="Buyer persona (industry, size, existing tech) — e.g. mid-market wholesale distributors 50-2000 employees with QuickBooks or no modern WMS"
+        class="field w-full text-sm"
+        style="background:rgba(15,22,38,0.5); color:var(--text-strong); border-color:var(--border)"
       >
-      <div class="flex items-center gap-2">
-        <label for="limit" class="text-xs font-medium" style="color:var(--muted)">Limit</label>
-        <input
-          type="number"
-          id="limit"
-          name="limit"
-          value="10"
-          min="1"
-          max="50"
-          class="field w-20"
-        >
+      <div class="text-[11px]" style="color:var(--faint)">
+        Without a persona the prospector will return any company in the target industry — including saturated incumbents and competitors. With a persona, the prospector steers toward under-instrumented mid-market prospects and the scorer penalises already-saturated stacks and same-category vendors.
       </div>
-      <button type="submit" class="btn btn--primary" data-press>
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-        Run pipeline
-      </button>
     </form>
   </div>
 </section>

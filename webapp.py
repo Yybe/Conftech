@@ -35,6 +35,7 @@ import database as db
 class PipelineRequest(BaseModel):
     target_product: str
     limit: int = 10
+    buyer_persona: str = ""
 
 
 class StatusUpdate(BaseModel):
@@ -297,17 +298,18 @@ def _job_finish(error: str | None = None) -> None:
             _JOB_STATE["last_error_hint"] = _JOB_STATE["incidents"][0].get("error", "")
 
 
-def _run_pipeline_bg(target_product: str, limit: int) -> None:
+def _run_pipeline_bg(target_product: str, limit: int, buyer_persona: str = "") -> None:
     from prospector import NoNewLeadsError, prospect
     from researcher import research
     from scorer import score
     from search import SerperQuotaError
 
     _job_start(target_product, limit)
+    _JOB_STATE["buyer_persona"] = buyer_persona
     try:
         _job_update("prospecting", "Finding companies")
         try:
-            result = prospect(target_product, limit=limit)
+            result = prospect(target_product, limit=limit, buyer_persona=buyer_persona)
         except SerperQuotaError as exc:
             _record_incident("prospecting", "serper", exc)
             _job_finish(error=str(exc))
@@ -568,17 +570,23 @@ def build_app() -> FastAPI:
     def run_pipeline(
         target_product: str = Form(...),
         limit: int = Form(10),
+        buyer_persona: str = Form(""),
         bg: BackgroundTasks = BackgroundTasks(),
     ):
-        bg.add_task(_run_pipeline_bg, target_product, limit)
+        bg.add_task(_run_pipeline_bg, target_product, limit, buyer_persona)
         return RedirectResponse("/leads?notice=started", status_code=303)
 
     # --- JSON API (kept from v0.1) ------------------------------------------
 
     @app.post("/api/pipeline")
     def api_pipeline(req: PipelineRequest, bg: BackgroundTasks):
-        bg.add_task(_run_pipeline_bg, req.target_product, req.limit)
-        return {"job": "started", "target_product": req.target_product, "limit": req.limit}
+        bg.add_task(_run_pipeline_bg, req.target_product, req.limit, req.buyer_persona)
+        return {
+            "job": "started",
+            "target_product": req.target_product,
+            "limit": req.limit,
+            "buyer_persona": req.buyer_persona,
+        }
 
     @app.get("/api/leads")
     def api_leads(status: str | None = None, target_product: str | None = None, limit: int = 50):

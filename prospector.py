@@ -344,17 +344,25 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
 
 # --- Query building ---------------------------------------------------------
 
-def build_queries(target_product: str) -> dict[str, list[str]]:
+def build_queries(target_product: str, buyer_persona: str = "") -> dict[str, list[str]]:
     """Use the LLM (prompts/prospector.md) to plan TheirStack tech filters +
     description patterns + Serper queries. Falls back to a target-aware
     keyword plan on any LLM failure so different inputs do not collapse into
-    the same cached TheirStack payload."""
+    the same cached TheirStack payload.
+
+    `buyer_persona` is a free-form description of the IDEAL buyer (industry,
+    size, existing tech posture). It steers the plan toward under-instrumented
+    prospects instead of saturated incumbents or competitors.
+    """
     try:
+        user_parts = [f"Target Product: {target_product}"]
+        if buyer_persona.strip():
+            user_parts.append(f"Buyer Persona: {buyer_persona.strip()}")
         plan = parse_json(
             chat(
                 load_prompt("prospector.md"),
-                f"Target Product: {target_product}",
-                max_tokens=700,
+                "\n\n".join(user_parts),
+                max_tokens=900,
             )
         )
         return {
@@ -364,7 +372,7 @@ def build_queries(target_product: str) -> dict[str, list[str]]:
         }
     except Exception as exc:  # LLM down -> deterministic fallback
         print(f"[prospector] LLM query planning failed ({exc}); using keyword fallback.")
-        return _keyword_fallback_plan(target_product)
+        return _keyword_fallback_plan(target_product, buyer_persona)
 
 
 # --- Target-aware keyword fallback ------------------------------------------
@@ -406,7 +414,43 @@ _TARGET_TECH_HINTS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
 ]
 
 
-def _keyword_fallback_plan(target_product: str) -> dict[str, list[str]]:
+def _persona_employee_cap(buyer_persona: str) -> int | None:
+    """Extract a maximum employee count from a free-form buyer persona.
+
+    Examples that match:
+      "mid-market wholesale distributors (50-2000 employees)" -> 2000
+      "manufacturing companies with 500 to 5,000 employees"  -> 5000
+      "under 1000 employees"                                 -> 1000
+      "less than 250 staff"                                  -> 250
+
+    Returns None when no number is mentioned - caller falls back to the
+    global ENTERPRISE_EMPLOYEE_MIN ceiling (10k).
+    """
+    import re as _re
+
+    text = (buyer_persona or "").lower()
+    # 1) "N to M employees" / "N-M employees" / "N - M employees"
+    m = _re.search(r"(\d[\d,]*)\s*(?:to|-|–)\s*(\d[\d,]*)\s*(?:employees|staff|people|headcount)", text)
+    if m:
+        return int(m.group(2).replace(",", ""))
+    # 2) "under N" / "less than N" / "fewer than N" / "< N"
+    m = _re.search(r"(?:under|less than|fewer than|<)\s*(\d[\d,]*)\s*(?:employees|staff|people|headcount)?", text)
+    if m:
+        return int(m.group(1).replace(",", ""))
+    return None
+
+
+# Persona hints that should add an EXPLICIT exclude for competitors. The
+# prospector already filters competitors via the `classify_company` rules, but
+# the persona is the most reliable place to encode "is the company a vendor
+# of the same category" when the category is ambiguous from the target text.
+_COMPETITOR_EXCLUDE_HINTS = (
+    "software", "service", "provider", "platform", "consulting",
+    "consultancy", "saas", "vendor", "msp", "agency",
+)
+
+
+def _keyword_fallback_plan(target_product: str, buyer_persona: str = "") -> dict[str, list[str]]:
     """Build a target-aware TheirStack plan when the LLM is unavailable.
 
     The plan's tech slugs + Serper queries are derived from the target text
@@ -443,7 +487,11 @@ def _keyword_fallback_plan(target_product: str) -> dict[str, list[str]]:
 
 # --- Core flow --------------------------------------------------------------
 
-def prospect(target_product: str, limit: int = 10) -> dict[str, Any]:
+def prospect(
+    target_product: str,
+    limit: int = 10,
+    buyer_persona: str = "",
+) -> dict[str, Any]:
     """Run the full prospecting flow. Returns:
 
         {
@@ -457,9 +505,16 @@ def prospect(target_product: str, limit: int = 10) -> dict[str, Any]:
         NoNewLeadsError: when upstream search returned companies but every
         one of them was already in the database. The web layer surfaces this
         as an honest "no new leads" message instead of a fake success.
+
+    `buyer_persona` is a free-form description of the IDEAL buyer. It
+    steers the search plan and is also stored on each inserted lead
+    (`leads.buyer_persona`) so the scorer can use it to enforce the
+    saturated-stack / competitor caps in the rubric.
     """
-    plan = build_queries(target_product)
+    plan = build_queries(target_product, buyer_persona)
     print(f"[prospector] Target: {target_product!r}")
+    if buyer_persona:
+        print(f"[prospector] Buyer persona: {buyer_persona!r}")
     print(f"[prospector] Tech filters: {plan['technology_slugs'] or '(none)'}")
     print(f"[prospector] Description patterns: {plan['description_patterns'] or '(none)'}")
     print(f"[prospector] Serper queries: {plan['serper_queries'] or '(none)'}")
@@ -500,12 +555,14 @@ def prospect(target_product: str, limit: int = 10) -> dict[str, Any]:
             {"company_description_pattern_or": [target_product], "limit": per_payload}
         )
 
-    # Exclude 10k+ enterprises at query level (matches the classifier's
-    # ENTERPRISE_EMPLOYEE_MIN) so we don't burn 3 credits per giant we'd
-    # reject anyway. `_or_null` keeps companies whose size TheirStack
-    # doesn't know - the classifier still evaluates them locally.
+    # Employee-count ceiling: prefer the persona's number (e.g. "50-2000")
+    # when one is mentioned; otherwise fall back to the global 10k cap
+    # that the classifier uses. `_or_null` keeps companies whose size
+    # TheirStack doesn't know so the classifier still evaluates them.
+    persona_cap = _persona_employee_cap(buyer_persona)
+    employee_cap = min(persona_cap, ENTERPRISE_EMPLOYEE_MIN - 1) if persona_cap else ENTERPRISE_EMPLOYEE_MIN - 1
     for payload in theirstack_payloads:
-        payload["max_employee_count_or_null"] = ENTERPRISE_EMPLOYEE_MIN - 1
+        payload["max_employee_count_or_null"] = employee_cap
 
     for payload in theirstack_payloads:
         if len(companies) >= target_pool:
@@ -588,6 +645,7 @@ def prospect(target_product: str, limit: int = 10) -> dict[str, Any]:
             target_product=target_product,
             contact_email=sorted(emails)[0] if emails else None,
             company_profile=cls["profile"],
+            buyer_persona=buyer_persona,
         )
         new_leads.append(lead)
         print(f"[prospector] NEW {name} ({website}) status=raw emails={sorted(emails)}")

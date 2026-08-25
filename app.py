@@ -85,8 +85,12 @@ def watch(interval: int = 60) -> None:
 
 # --- Pipeline ---------------------------------------------------------------
 
-def run_pipeline(target_product: str, limit: int = 10) -> dict[str, Any]:
-    result = prospect(target_product, limit=limit)
+def run_pipeline(
+    target_product: str,
+    limit: int = 10,
+    buyer_persona: str = "",
+) -> dict[str, Any]:
+    result = prospect(target_product, limit=limit, buyer_persona=buyer_persona)
     new_leads = result["new"]
     research(limit=len(new_leads) or 10)
     score(limit=len(new_leads) or 10)
@@ -115,10 +119,17 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pipeline", help="Full flow: prospect -> research -> score")
     p.add_argument("--target", required=True)
     p.add_argument("--limit", type=int, default=10)
+    p.add_argument(
+        "--persona",
+        default="",
+        help="Free-form buyer persona (industry, size, existing tech posture). "
+             "Used to constrain the prospector and the scorer.",
+    )
 
     p = sub.add_parser("prospect", help="Prospector only")
     p.add_argument("--target", required=True)
     p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--persona", default="")
 
     p = sub.add_parser("research", help="Deep Researcher only")
     p.add_argument("--limit", type=int, default=20)
@@ -145,9 +156,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "init-db":
             db.init_schema()
         elif args.cmd == "pipeline":
-            run_pipeline(args.target, args.limit)
+            run_pipeline(args.target, args.limit, buyer_persona=args.persona)
         elif args.cmd == "prospect":
-            prospect(args.target, args.limit)
+            prospect(args.target, args.limit, buyer_persona=args.persona)
         elif args.cmd == "research":
             research(limit=args.limit)
         elif args.cmd == "score":

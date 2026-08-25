@@ -302,6 +302,93 @@ def _filter_penalty(lead: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
 
 # --- Deterministic fallback (LLM rate-limited / unavailable) ------------------
 
+# Stacks that, when present in a lead's tech_stack, signal a SATURATED
+# incumbent for a given target_product. Saturated = the company already runs
+# the system we sell at a depth that means an 18+ month sales cycle, not a
+# near-term buyer. Each entry is (target-keywords, stack-hints).
+_SATURATED_STACK_FOR: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    # Wholesale distribution / supply-chain software - already on a modern WMS/ERP
+    (("wholesale", "distribution", "supply chain", "warehouse", "wms", "logistics", "3pl"),
+     ("sap", "oracle", "oracle-erp", "oracle-e-business-suite", "jda", "kinaxis",
+      "anaplan", "manhattan-associates", "blue-yonder", "highjump", "blue-yonder-wms",
+      "manhattan-active", "o9", "e2open")),
+    # Cloud migration - already on a major public cloud at depth
+    (("cloud migration", "cloud transform", "aws", "azure", "gcp"),
+     ("amazon-web-services", "microsoft-azure", "google-cloud-platform")),
+    # Cybersecurity - already on a top-tier SIEM/SOC
+    (("cybersecurity", "security operations", "soc", "siem", "compliance"),
+     ("splunk", "sentinel", "qradar", "crowdstrike", "palo-alto", "fortinet",
+      "rapid7", "tenable", "okta")),
+    # CRM - already on a major CRM
+    (("crm", "sales automation"),
+     ("salesforce", "hubspot", "microsoft-dynamics-365", "zoho-crm", "pipedrive")),
+]
+
+
+# Phrases in a lead's company description / industry that mean the company
+# itself Sells / Provides the target product (i.e. it's a COMPETITOR, not
+# a buyer). Matches the classifier's _SERVICE_PROVIDER_PHRASES for
+# services; the additional `_COMPETITOR_PRODUCT_PHRASES` covers SaaS / boxed
+# software vendors.
+_COMPETITOR_PRODUCT_PHRASES = (
+    "software company", "software vendor", "saas company", "saas provider",
+    "platform company", "we provide", "we offer", "we build", "we sell",
+    "our platform", "our product", "our software", "leading provider of",
+    "leading supplier of", "industry-leading", "trusted by thousands",
+    "trusted by hundreds",
+)
+
+
+def _saturated_penalty(lead: dict[str, Any], target_product: str) -> int:
+    """Return a negative number when the lead's tech stack already replaces
+    what `target_product` would sell. 0 when no match."""
+    low_target = (target_product or "").lower()
+    techs = [str(t).lower() for t in (lead.get("tech_stack") or []) if isinstance(t, str)]
+    if not techs:
+        return 0
+    for target_keys, stack_hints in _SATURATED_STACK_FOR:
+        if not any(k in low_target for k in target_keys):
+            continue
+        hits = sum(1 for t in techs for h in stack_hints if h in t)
+        if hits >= 3:
+            return -45  # deeply saturated -> 90-day sale is unrealistic
+        if hits >= 1:
+            return -25  # some modern stack present
+    return 0
+
+
+def _competitor_penalty(lead: dict[str, Any], target_product: str) -> int:
+    """Return a strong negative number when the lead's public description
+    says it Sells / Provides the target product category (it's a competitor,
+    not a buyer)."""
+    low_target = (target_product or "").lower()
+    # Only treat as a competitor when the target is a recognisable product
+    # category (software / service / platform). For a target like "Cloud
+    # Migration Services" the company description containing "cloud" is fine;
+    # for "Wholesale Distribution Software" the description containing
+    # "wholesale distribution" and "software" is the danger signal.
+    if not any(k in low_target for k in ("software", "service", "platform", "solution", "system", "saas")):
+        return 0
+
+    profile = lead.get("company_profile") or {}
+    blob = " ".join(
+        filter(None, [
+            str(profile.get("seo_description") or ""),
+            str(profile.get("long_description") or ""),
+            str(profile.get("industry") or ""),
+            " ".join(str(t) for t in (profile.get("company_tags") or [])),
+            " ".join(str(k) for k in (profile.get("keywords") or [])),
+        ])
+    ).lower()
+
+    has_target_term = any(t in blob for t in low_target.split() if len(t) > 4)
+    if not has_target_term:
+        return 0
+    if any(p in blob for p in _COMPETITOR_PRODUCT_PHRASES):
+        return -80  # hard cap -> not a buyer
+    return -10  # light cap - they are at least in the same space
+
+
 _SCORER_STOPWORDS = {
     "the", "and", "for", "with", "our", "your", "that", "this", "from",
     "are", "was", "were", "has", "have", "had", "not", "you", "we", "us",
@@ -431,6 +518,17 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
     """Score a single researched lead with an evidence-cited justification."""
     scraped = lead.get("scraped_data", {}) or {}
     evidence = _pick_evidence(scraped)
+    target_product = lead.get("target_product") or "unknown"
+
+    # The persona may live in the dedicated column (after the schema
+    # migration ran) or in company_profile.buyer_persona (fallback when the
+    # column hasn't been added yet). The persona steers both the LLM and
+    # the deterministic fallback.
+    persona = (
+        lead.get("buyer_persona")
+        or (lead.get("company_profile") or {}).get("buyer_persona")
+        or ""
+    )
 
     company = {
         "name": lead.get("company_name"),
@@ -447,7 +545,8 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
     }
     user = json.dumps(
         {
-            "target_product": lead.get("target_product") or "unknown",
+            "target_product": target_product,
+            "buyer_persona": persona,
             "company": company,
         },
         ensure_ascii=False,
@@ -474,10 +573,33 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
             f"[scorer] LLM failed for {lead.get('company_name')} ({exc}); "
             "using deterministic evidence fallback."
         )
-        fb = _rule_based_score(lead.get("target_product") or "unknown", scraped, lead.get("tech_stack", []))
+        fb = _rule_based_score(target_product, scraped, lead.get("tech_stack", []))
         fit_score = fb["fit_score"]
         reasoning = fb["reasoning"]
         validated = fb["evidence"]
+
+    # Buyer-intent caps (deterministic, sourced).
+    sat_pen = _saturated_penalty(lead, target_product)
+    comp_pen = _competitor_penalty(lead, target_product)
+    extra_notes: list[str] = []
+    if sat_pen:
+        extra_notes.append(
+            f"saturated-stack penalty {sat_pen}: company already runs modern systems "
+            "that would replace what we sell"
+        )
+    if comp_pen:
+        extra_notes.append(
+            f"competitor penalty {comp_pen}: company's public profile indicates it "
+            "sells the same product category"
+        )
+    if sat_pen or comp_pen:
+        # Apply with a cap so a deeply-saturated competitor can't be raised
+        # above the rubric's hard cap just because the LLM gave 70.
+        fit_score = min(fit_score, 30) + sat_pen + comp_pen
+        fit_score = max(0, fit_score)
+        if extra_notes:
+            note = "Buyer-intent adjustments: " + "; ".join(extra_notes)
+            reasoning = f"{reasoning}\n\n{note}".strip() if reasoning else note
 
     # Poor cold-outreach target penalty (deterministic, sourced).
     penalty, filter_findings = _filter_penalty(lead)
