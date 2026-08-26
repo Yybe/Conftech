@@ -150,7 +150,12 @@
           {% endif %}
           {% if lead.contact_email %}<span>{{ lead.contact_email }}</span>{% endif %}
           {% if lead.target_product %}<span class="font-medium text-slate-500">{{ lead.target_product }}</span>{% endif %}
-          {% if lead.buyer_persona %}<span class="chip" title="buyer persona">persona: {{ lead.buyer_persona|truncate(48, True) }}</span>{% endif %}
+          {% if lead.buyer_persona %}<span class="chip" title="buyer persona: {{ lead.buyer_persona|truncate(80, True) }}">persona: {{ lead.buyer_persona|truncate(36, True) }}</span>{% endif %}
+          {% if lead.matches_persona is sameas true or (lead.company_profile and (lead.company_profile or {}).get('matches_persona') is sameas true) %}
+            <span class="chip" style="background:rgba(56,189,248,0.18); color:#7dd3fc; font-weight:700" title="Matches the buyer persona">BP</span>
+          {% elif lead.buyer_persona %}
+            <span class="chip" style="color:var(--faint)" title="Outside the buyer persona (broader search)">broader</span>
+          {% endif %}
           <span>{{ lead.created_at|fmt_dt }}</span>
         </div>
         {% if cp.segment or cp.employee_range or cp.industry %}

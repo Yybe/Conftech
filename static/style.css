@@ -433,3 +433,35 @@ body { background: var(--bg); color: var(--text); }
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   Activity panel — live agent event stream on the dashboard.
+   ========================================================================== */
+#activity-list .activity-item {
+  animation: activity-flash 0.6s ease-out;
+}
+#activity-list .activity-item:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.015);
+}
+#activity-list .activity-item details summary::-webkit-details-marker {
+  display: none;
+}
+#activity-list .activity-item details summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+  color: var(--muted);
+}
+#activity-list .activity-item details[open] summary::before {
+  transform: rotate(90deg);
+}
+@keyframes activity-flash {
+  0%   { background: rgba(56, 189, 248, 0.18); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #activity-list .activity-item { animation: none; }
+}
+#activity-list pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}

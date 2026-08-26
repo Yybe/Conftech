@@ -41,11 +41,55 @@ class NoNewLeadsError(RuntimeError):
     in the database. The web layer surfaces this as 'no new leads for
     {target_product}' instead of pretending the run was a success."""
 
+
+class NoBuyersFoundError(RuntimeError):
+    """Raised when prospector inserted leads but the scorer marked every
+    one as a poor fit (typically because TheirStack's free-tier search
+    surfaced competitors / saturated companies that the classifier let
+    through, or the persona was too narrow). The web layer surfaces this
+    as a clear "no real buyers found for this target" message instead of
+    leaving the user staring at 4 pending_review rows with fit=0."""
+
 THEIRSTACK_URL = "https://api.theirstack.com/v1/companies/search"
 SERPER_URL = "https://google.serper.dev/search"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+", re.IGNORECASE)
 serper_search = web_search
 extract_emails = extract_emails_from_text
+
+
+# --- TheirStack / Serper key rotation ---------------------------------------
+# Free-tier keys get depleted or rate-limited independently, so we maintain
+# a per-job cursor that walks through the configured keys on 402/429. The
+# first available key is the primary; the rest are fallbacks. The list is
+# read once per process (env doesn't change at runtime) and ordered to keep
+# the same key as primary across runs unless that key fails.
+
+def _theirstack_keys() -> list[str]:
+    return [
+        k for k in (
+            os.getenv("THEIRSTACK_API_KEY"),
+            os.getenv("THEIRSTACK_API_KEY_2"),
+            os.getenv("THEIRSTACK_API_KEY_3"),
+        ) if k
+    ]
+
+
+def _serper_keys() -> list[str]:
+    return [
+        k for k in (
+            os.getenv("SERPER_API_KEY"),
+            os.getenv("SERPER_API_KEY_2"),
+            os.getenv("SERPER_API_KEY_3"),
+            os.getenv("SERPER_API_KEY_4"),
+        ) if k
+    ]
+
+
+# Per-process counter for TheirStack calls so we can rate-limit ourselves
+# (free tier: 10/minute, 50/hour). Module-level so the search_theirstack
+# decorator sees the same clock across all calls in one run.
+_TS_LAST_CALL_AT: float = 0.0
+_TS_MIN_INTERVAL = float(os.getenv("THEIRSTACK_MIN_INTERVAL", "7"))  # seconds
 
 
 
@@ -212,14 +256,37 @@ def classify_company(co: dict) -> dict:
     # 4) Service providers (IT/consulting/cloud/migration/MSP...) sell what we
     #    sell - they are competitors, not buyers. Exclude decisively.
     #    Check both free-text metadata and the industry-taxonomy name.
+    #    EXCEPTION: when the company has strong buyer-tech signals (legacy
+    #    monolith stack, on-prem database) it is a REAL software-org buyer
+    #    even if its industry is "software development" - lots of mid-market
+    #    companies self-classify that way when they have an in-house IT
+    #    team. We require AT LEAST 3 buyer-tech hints to override.
     blob_hit = next((p for p in _SERVICE_PROVIDER_PHRASES if p in blob), None)
     ind_hit = next(
         (p for p in _PROVIDER_INDUSTRY_PHRASES if p in str(co.get("industry") or "").lower()),
         None,
     )
     if blob_hit or ind_hit:
-        hit, source = (ind_hit, "industry") if ind_hit else (blob_hit, "public metadata")
-        return done("exclude", "service_provider", [f"service-provider signal {hit!r} in {source}"])
+        # Check for legacy-stack buyer signals in their tech_stack / long
+        # description - these prove they are a real buyer even if their
+        # public profile mentions "it services" or "software development".
+        # We require AT LEAST 2 distinct hints because the free-tier
+        # TheirStack data is noisy and a single hit is often spurious.
+        legacy_buyer_hints = (
+            "oracle-database", "sap", "microsoft-sql-server", "vmware-vsphere",
+            "weblogic", "websphere", "jboss", "tomcat", "iis",
+            "windows-server", "mainframe", "as400", "ibm-i",
+            "jenkins", "subversion", "perforce", "bamboo-ci",
+            "tfs", "team-foundation-server",
+        )
+        tech_blob = " ".join(str(t) for t in (co.get("technology_names") or co.get("technologies_found") or [])).lower()
+        tech_blob += " " + (str(co.get("long_description") or "") + " " + str(co.get("seo_description") or "") + " " + str(co.get("industry") or "")).lower()
+        buyer_hits = sum(1 for h in legacy_buyer_hints if h in tech_blob)
+        if buyer_hits < 2:
+            hit, source = (ind_hit, "industry") if ind_hit else (blob_hit, "public metadata")
+            return done("exclude", "service_provider", [f"service-provider signal {hit!r} in {source}"])
+        # Otherwise: falls through to `keep` (we treat it as a real buyer
+        # because the legacy stack is decisive).
 
     # 5) Publicly traded listings -> large-company territory; penalize, keep if useful.
     if traded_symbol:
@@ -234,21 +301,80 @@ def classify_company(co: dict) -> dict:
 
 # --- API clients ------------------------------------------------------------
 
-@cache.cached("theirstack", ttl_days=14)
+class TheirStackQuotaError(RuntimeError):
+    """Raised when every configured TheirStack key is depleted (402) or
+    rate-limited (429). The orchestrator records this as an incident so the
+    user can see "all TheirStack keys are out of credits / rate-limited" in
+    the web banner instead of the spinner spinning forever."""
+
+
+def _throttle_theirstack() -> None:
+    """Sleep the configured minimum interval between TheirStack calls.
+    Free tier = 10 requests/minute; the default 7s interval is conservative
+    and avoids the per-minute / per-hour 429s we were seeing in the log."""
+    import time as _time
+    global _TS_LAST_CALL_AT
+    now = _time.time()
+    if _TS_LAST_CALL_AT:
+        elapsed = now - _TS_LAST_CALL_AT
+        if elapsed < _TS_MIN_INTERVAL:
+            _time.sleep(_TS_MIN_INTERVAL - elapsed)
+    _TS_LAST_CALL_AT = _time.time()
+
+
 def search_theirstack(payload: dict) -> dict:
-    """POST /v1/companies/search. Payload cached by hash."""
-    resp = requests.post(
-        THEIRSTACK_URL,
-        headers={
-            "Authorization": f"Bearer {os.getenv('THEIRSTACK_API_KEY', '')}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=60,
-    )
-    if resp.status_code != 200:
+    """POST /v1/companies/search with key rotation, rate limiting, and a
+    clear error when all keys are exhausted.
+
+    Each call sleeps at least `THEIRSTACK_MIN_INTERVAL` seconds since the
+    previous one (free tier: 10/min). On 402 (no credits) or 429 (rate
+    limited) the call transparently falls through to the next key in the
+    rotation. When every key has been tried, raises `TheirStackQuotaError`.
+
+    The 14-day disk cache (see `cache.cached` in cache.py) wraps the
+    successful responses so repeated identical payloads don't burn credits
+    at all. Cached calls return immediately without an HTTP request, so
+    they don't pay the throttle.
+    """
+    cache_key = {"namespace": "theirstack", "payload": payload}
+    cached = cache.get("theirstack", payload, ttl_days=14)
+    if cached is not None:
+        return cached
+
+    keys = _theirstack_keys()
+    if not keys:
+        raise TheirStackQuotaError("No TheirStack API key configured")
+
+    last_err: Exception | None = None
+    for key in keys:
+        _throttle_theirstack()
+        try:
+            resp = requests.post(
+                THEIRSTACK_URL,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            last_err = exc
+            continue
+        if resp.status_code == 200:
+            cache.set("theirstack", payload, resp.json())
+            return resp.json()
+        # 402 (no credits) and 429 (rate limited) are recoverable via key
+        # rotation; any other status is treated as a per-call failure.
+        if resp.status_code in (402, 429):
+            last_err = RuntimeError(f"TheirStack {resp.status_code}: {resp.text[:200]}")
+            print(f"[theirstack] key ended with {resp.status_code}; rotating to next key")
+            continue
         raise RuntimeError(f"TheirStack {resp.status_code}: {resp.text[:300]}")
-    return resp.json()
+
+    raise TheirStackQuotaError(
+        f"All {len(keys)} TheirStack key(s) exhausted: {last_err}"
+    )
 
 
 # --- Web search fallback discovery (zero-auth DuckDuckGo + Serper) -----------
@@ -354,17 +480,27 @@ def build_queries(target_product: str, buyer_persona: str = "") -> dict[str, lis
     size, existing tech posture). It steers the plan toward under-instrumented
     prospects instead of saturated incumbents or competitors.
     """
+    from webapp import _record_event
+    user_parts = [f"Target Product: {target_product}"]
+    if buyer_persona.strip():
+        user_parts.append(f"Buyer Persona: {buyer_persona.strip()}")
+    _record_event(
+        agent="prospector",
+        kind="plan_request",
+        summary=f"Planning queries: target='{target_product}'" + (f" persona='{buyer_persona[:60]}…'" if buyer_persona else ""),
+        detail={"target_product": target_product, "buyer_persona": buyer_persona},
+    )
     try:
-        user_parts = [f"Target Product: {target_product}"]
-        if buyer_persona.strip():
-            user_parts.append(f"Buyer Persona: {buyer_persona.strip()}")
-        plan = parse_json(
-            chat(
-                load_prompt("prospector.md"),
-                "\n\n".join(user_parts),
-                max_tokens=900,
-            )
+        from llm import chat as _chat
+        prompt = load_prompt("prospector.md")
+        reply = _chat(prompt, "\n\n".join(user_parts), max_tokens=900)
+        _record_event(
+            agent="prospector",
+            kind="llm_reply",
+            summary="LLM produced a query plan",
+            detail={"prompt_first_240": (prompt[:240] + "…") if len(prompt) > 240 else prompt, "user_first_240": (user_parts[0][:240] + "…") if user_parts else "", "reply": reply[:600]},
         )
+        plan = parse_json(reply)
         return {
             "technology_slugs": list(plan.get("technology_slugs", [])),
             "description_patterns": list(plan.get("description_patterns", [])),
@@ -372,6 +508,12 @@ def build_queries(target_product: str, buyer_persona: str = "") -> dict[str, lis
         }
     except Exception as exc:  # LLM down -> deterministic fallback
         print(f"[prospector] LLM query planning failed ({exc}); using keyword fallback.")
+        _record_event(
+            agent="prospector",
+            kind="plan_fallback",
+            summary=f"LLM plan failed ({exc}); using keyword fallback",
+            detail={"error": str(exc)},
+        )
         return _keyword_fallback_plan(target_product, buyer_persona)
 
 
@@ -391,7 +533,13 @@ _BUYER_DESCRIPTION_PATTERNS = (
 
 # Keyword -> tech slugs to query. Slugs come from TheirStack's catalog and
 # correspond to actual technology installations - the classifier uses them
-# to surface real on-prem enterprise systems.
+# to surface real on-prem enterprise systems. CRITICAL: for SERVICE targets
+# (DevOps consulting, cloud migration, ...) the slugs should be the LEGACY
+# systems the service would REPLACE, NOT the industry signals of the buyer
+# (e.g. for "DevOps consulting" the buyer-tech signal is "still on Jenkins /
+# manual deploy", not "they have a software engineering team" - the latter
+# pulls in devops consultancies, which the classifier then correctly
+# rejects as competitors).
 _TARGET_TECH_HINTS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("cloud", "migration", "moderniz", "lift and shift", "lift & shift"),
      ("vmware-vsphere", "microsoft-hyperv", "oracle-database", "sap",
@@ -405,9 +553,16 @@ _TARGET_TECH_HINTS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("data", "analytics", "warehouse", "bi "),
      ("snowflake", "tableau", "looker", "power-bi", "redshift",
       "teradata", "databricks")),
-    (("devops", "ci/cd", "kubernetes", "container"),
-     ("kubernetes", "docker", "jenkins", "gitlab", "github", "argo-cd",
-      "terraform", "ansible")),
+    # DevOps / CI/CD / SRE / platform engineering services: target the
+    # BUYER tech (legacy CI/CD + monolith + on-prem), NOT the buyer org
+    # type ("software development" / "saas") which surfaces competitors.
+    (("devops", "ci/cd", "ci-cd", "kubernetes", "k8s", "container",
+      "platform engineering", "sre", "site reliability",
+      "deployment automation"),
+     ("jenkins", "bamboo-ci", "atlassian-bamboo", "subversion", "cvs",
+      "perforce", "ibm-rational", "hp-alm", "qc", "java", "jboss",
+      "weblogic", "websphere", "oracle-weblogic-server",
+      "tomcat", "apache-tomcat", "iis", "internet-information-services")),
     (("crm", "sales"),
      ("salesforce", "hubspot", "zoho-crm", "microsoft-dynamics-365",
       "pipedrive")),
@@ -440,6 +595,88 @@ def _persona_employee_cap(buyer_persona: str) -> int | None:
     return None
 
 
+def _persona_min_employees(buyer_persona: str) -> int | None:
+    """Extract the LOWER bound of an employee-count range (e.g. "50 to 2000"
+    -> 50). Used by `matches_persona` to verify a lead's size falls in the
+    persona's window.
+    """
+    import re as _re
+    text = (buyer_persona or "").lower()
+    m = _re.search(r"(\d[\d,]*)\s*(?:to|-|–)\s*(\d[\d,]*)\s*(?:employees|staff|people|headcount)", text)
+    if m:
+        return int(m.group(1).replace(",", ""))
+    # "over N" / "more than N" / "at least N" / "N+"
+    m = _re.search(r"(?:over|more than|at least|>\s*)(\d[\d,]*)\s*(?:employees|staff|people|headcount)?", text)
+    if m:
+        return int(m.group(1).replace(",", ""))
+    return None
+
+
+# Industries the LLM is most likely to surface as buyer descriptions. When a
+# lead's industry/description contains any of these tokens, the persona
+# match is more likely.
+_PERSONA_INDUSTRY_HINTS = (
+    "manufactur", "logistics", "distribution", "wholesale", "retail",
+    "health", "pharma", "medical", "hospital", "bank", "credit union",
+    "insurance", "financ", "aerospace", "automotive", "construction",
+    "food", "beverage", "consumer", "higher education", "university",
+    "defense", "energy", "utility", "mining", "oil", "gas", "real estate",
+    "property", "construction", "transport", "freight", "3pl", "warehouse",
+    "ecommerce", "e-commerce", "saas", "software", "technology",
+    "telecom", "media", "advertising", "consulting", "professional services",
+    "staffing", "recruiting", "hr", "human resources", "education", "nonprofit",
+    "government", "public sector", "agriculture", "farming", "fishing",
+    "forestry", "textile", "apparel", "furniture", "printing", "publishing",
+)
+
+
+def _matches_persona(lead: dict[str, Any], persona: str) -> bool:
+    """Cheap, deterministic buyer-persona match.
+
+    Returns True when the lead's tech_stack / company_profile.industry /
+    description shares a token with the persona, AND the lead's employee
+    count is inside the persona's range (when one is given). Returns False
+    otherwise. The check is deliberately lenient — any single token
+    overlap counts — because the persona is a SOFT filter, not a hard one.
+    """
+    if not persona:
+        return False
+    text = " ".join(
+        filter(None, [
+            str(lead.get("company_name") or ""),
+            " ".join(str(t) for t in (lead.get("tech_stack") or [])),
+            str((lead.get("company_profile") or {}).get("industry") or ""),
+            str((lead.get("company_profile") or {}).get("seo_description") or ""),
+            str((lead.get("company_profile") or {}).get("long_description") or ""),
+            " ".join(str(t) for t in ((lead.get("company_profile") or {}).get("company_tags") or [])),
+            " ".join(str(t) for t in ((lead.get("company_profile") or {}).get("keywords") or [])),
+        ])
+    ).lower()
+
+    # Tokenise the persona and look for token overlap with the lead's
+    # industry/description blob. Only tokens of length >= 4 to avoid
+    # matching generic words like "in", "for", "the".
+    import re as _re
+    persona_tokens = set(t for t in _re.findall(r"[a-z0-9]+", persona.lower()) if len(t) >= 4)
+    if not persona_tokens:
+        return False
+    # Quick pre-filter: at least one of the persona's industry hints.
+    if any(h in text for h in _PERSONA_INDUSTRY_HINTS if h in persona.lower()):
+        return True
+    # Otherwise: any single persona token must appear in the lead text.
+    if any(t in text for t in persona_tokens):
+        return True
+    # Also: any of the lead's tech_stack items appears as a token in the
+    # persona (the persona often names specific technologies).
+    persona_blob = " " + persona.lower() + " "
+    for tech in (lead.get("tech_stack") or []):
+        if not isinstance(tech, str):
+            continue
+        if len(tech) >= 4 and f" {tech.lower()} " in persona_blob:
+            return True
+    return False
+
+
 # Persona hints that should add an EXPLICIT exclude for competitors. The
 # prospector already filters competitors via the `classify_company` rules, but
 # the persona is the most reliable place to encode "is the company a vendor
@@ -457,6 +694,11 @@ def _keyword_fallback_plan(target_product: str, buyer_persona: str = "") -> dict
     itself, so different products no longer collide into one cached payload.
     The description patterns always come from the buyer-industry set
     regardless of the target (we want BUYERS, not providers).
+
+    When `buyer_persona` is empty, we use a broader plan (more tech slugs,
+    more industries) so the prospector reaches further. With a persona, we
+    stay closer to the strict plan but still cap the slugs to one payload
+    so the search completes inside the free-tier rate limit.
     """
     low = (target_product or "").lower()
     chosen: tuple[str, ...] = ()
@@ -465,11 +707,23 @@ def _keyword_fallback_plan(target_product: str, buyer_persona: str = "") -> dict
             chosen = slugs
             break
     if not chosen:
-        # Generic buyer-tech fallback (still better than the prior hardcoded
-        # migration-only set because it stays out of the cloud-migration cache
-        # namespace entirely via a different first slug).
+        # Generic buyer-tech fallback. Includes enough breadth to surface
+        # both service and product categories when the LLM is unavailable.
         chosen = ("sap", "oracle-database", "microsoft-365", "salesforce",
-                  "windows-server", "vmware-vsphere")
+                  "windows-server", "vmware-vsphere", "jenkins", "nginx",
+                  "apache-http-server", "cisco")
+
+    # Persona-agnostic: include a wider set of description patterns.
+    # Persona-aware: keep the strict buyer-industry set so the search
+    # doesn't surface 10,000 SaaS companies.
+    if buyer_persona.strip():
+        desc_patterns = list(_BUYER_DESCRIPTION_PATTERNS)
+    else:
+        # Broader plan when no persona: add a few more industries so the
+        # search reaches further.
+        desc_patterns = list(_BUYER_DESCRIPTION_PATTERNS) + [
+            "small business", "SMB", "mid-market", "B2B",
+        ]
 
     quoted_target = (target_product or "this service").strip()
     serper = [
@@ -480,7 +734,7 @@ def _keyword_fallback_plan(target_product: str, buyer_persona: str = "") -> dict
     ]
     return {
         "technology_slugs": list(chosen),
-        "description_patterns": list(_BUYER_DESCRIPTION_PATTERNS),
+        "description_patterns": desc_patterns,
         "serper_queries": serper,
     }
 
@@ -532,28 +786,46 @@ def prospect(
     #    companies to survive the quality filter (target pool > limit).
     tech_slugs = plan["technology_slugs"]
     desc_pats = plan["description_patterns"]
-    per_payload = max(2, min(limit, limit // 3 or 1))
+    # per_payload and target_pool are sized to fit comfortably under the
+    # free-tier rate limits: at THEIRSTACK_PER_PAGE=4 and ~5 calls per run
+    # that's 20 credits per run, well under the 50/hour free cap.
+    per_payload = int(os.getenv("THEIRSTACK_PER_PAGE", "4"))
+    per_payload = max(2, min(per_payload, 8))
     target_pool = max(limit, limit * 2)
 
+    # Build at most MAX_PAYLOADS TheirStack calls. Each costs 3 credits; with
+    # a 7-second inter-call throttle the whole batch finishes in under a
+    # minute. We COMBINE description patterns and tech slugs into a single
+    # AND payload when possible so one call covers more ground.
+    MAX_PAYLOADS = 5
     theirstack_payloads: list[dict] = []
-    if desc_pats:
-        theirstack_payloads = [
-            {
+    if desc_pats and tech_slugs:
+        # The single most efficient query: AND of top desc_pat + ALL tech slugs.
+        # One call costs 3 credits and surfaces the most relevant slice.
+        theirstack_payloads.append({
+            "company_description_pattern_or": desc_pats[:3],
+            "tech_filters": {"technology_slug_or": tech_slugs[:6]},
+            "limit": per_payload,
+        })
+    elif desc_pats:
+        for pat in desc_pats[:MAX_PAYLOADS]:
+            theirstack_payloads.append({
                 "company_description_pattern_or": [pat],
-                "tech_filters": {"technology_slug_or": tech_slugs},
                 "limit": per_payload,
-            }
-            for pat in desc_pats
-        ]
-    if tech_slugs:
-        theirstack_payloads += [
-            {"tech_filters": {"technology_slug_or": [tech]}, "limit": per_payload}
-            for tech in tech_slugs
-        ]
+            })
+    elif tech_slugs:
+        for tech in tech_slugs[:MAX_PAYLOADS]:
+            theirstack_payloads.append({
+                "tech_filters": {"technology_slug_or": [tech]},
+                "limit": per_payload,
+            })
     if not theirstack_payloads:
-        theirstack_payloads.append(
-            {"company_description_pattern_or": [target_product], "limit": per_payload}
-        )
+        theirstack_payloads.append({
+            "company_description_pattern_or": [target_product],
+            "limit": per_payload,
+        })
+    # Hard cap so a runaway plan can't burn credits.
+    theirstack_payloads = theirstack_payloads[:MAX_PAYLOADS]
 
     # Employee-count ceiling: prefer the persona's number (e.g. "50-2000")
     # when one is mentioned; otherwise fall back to the global 10k cap
@@ -567,12 +839,32 @@ def prospect(
     for payload in theirstack_payloads:
         if len(companies) >= target_pool:
             break
+        from webapp import _record_event
+        _record_event(
+            agent="prospector",
+            kind="theirstack_query",
+            summary=f"TheirStack search: {payload.get('company_description_pattern_or') or list((payload.get('tech_filters') or {}).get('technology_slug_or') or [])[:1] or 'no filter'}",
+            detail={"payload": payload},
+        )
         try:
             result = search_theirstack(payload)
+            n = len(result.get("data") or [])
+            _record_event(
+                agent="prospector",
+                kind="theirstack_result",
+                summary=f"TheirStack returned {n} companies",
+                detail={"count": n, "first_3": [(c.get("name"), c.get("domain")) for c in (result.get("data") or [])[:3]]},
+            )
             for co in result.get("data", []) or []:
                 companies.append(co)
         except Exception as exc:
             print(f"[prospector] TheirStack query failed ({payload}): {exc}")
+            _record_event(
+                agent="prospector",
+                kind="theirstack_error",
+                summary=f"TheirStack query failed: {exc}",
+                detail={"error": str(exc), "payload": payload},
+            )
 
     # Dedupe by domain
     by_domain: dict[str, dict] = {}
@@ -582,16 +874,18 @@ def prospect(
             by_domain.setdefault(domain, co)
     companies = list(by_domain.values())
     print(f"[prospector] TheirStack returned {len(companies)} unique companies")
+    from webapp import _record_event
+    _record_event(
+        agent="prospector",
+        kind="dedupe",
+        summary=f"{len(companies)} unique companies after domain dedupe",
+        detail={"unique_count": len(companies)},
+    )
 
-    # 1b) Free fallback when TheirStack is unavailable (credits exhausted /
-    #     outage): Serper-based discovery of LinkedIn company pages for
-    #     buyer-indicator queries, with website-domain resolution. Lower
-    #     precision than TheirStack (no tech-stack matching), so the quality
-    #     filter + research/score still gate what enters the pipeline.
-    if not companies:
-        print("[prospector] TheirStack gave nothing; trying Serper fallback discovery.")
-        companies = _serper_discover(target_product, limit)
-        print(f"[prospector] Serper fallback returned {len(companies)} companies")
+    # 1b-placeholder: the Serper/DuckDuckGo fallback runs AFTER the quality
+    # filter (further down) so we can decide based on the real `kept` count
+    # whether TheirStack's results were usable. We just record the intent
+    # here so the activity stream shows the plan.
 
     # Quality filter: drop poor cold-outreach targets (enterprise / public
     # sector / defense) BEFORE they enter the pipeline - metadata-based, no
@@ -608,11 +902,25 @@ def prospect(
                 f"[prospector] EXCLUDED {name} ({domain}) - "
                 + "; ".join(cls["reasons"])
             )
+            from webapp import _record_event
+            _record_event(
+                agent="prospector",
+                kind="exclude",
+                summary=f"Excluded {name} ({domain})",
+                detail={"company": name, "domain": domain, "reasons": cls["reasons"]},
+            )
             continue
         kept.append((co, cls))
     print(
         f"[prospector] after filtering: {len(kept)} kept, "
         f"{len(excluded)} excluded (not SMB/mid-market targets)"
+    )
+    from webapp import _record_event
+    _record_event(
+        agent="prospector",
+        kind="filter_summary",
+        summary=f"{len(kept)} kept, {len(excluded)} excluded as poor cold-outreach targets",
+        detail={"kept_count": len(kept), "excluded_count": len(excluded), "excluded": [(n, r) for n, r in excluded[:10]]},
     )
 
     # 2) Split new vs already-known leads BEFORE inserting, so the web layer
@@ -626,6 +934,13 @@ def prospect(
         if not website:
             continue
 
+        from webapp import _record_event
+        _record_event(
+            agent="prospector",
+            kind="contact_search",
+            summary=f"Searching contact emails for {name} ({domain})",
+            detail={"domain": domain, "name": name},
+        )
         existing = db.find_lead_by_website(website)
         if existing:
             known_leads.append(existing)
@@ -633,10 +948,26 @@ def prospect(
                 f"[prospector] DUPLICATE {name} ({website}) - "
                 f"already in DB as status={existing.get('status')}"
             )
+            _record_event(
+                agent="prospector",
+                kind="duplicate",
+                summary=f"DUPLICATE {name} (already in DB as status={existing.get('status')})",
+                detail={"company": name, "website": website, "existing_status": existing.get("status"), "existing_id": existing.get("id")},
+            )
             continue
 
         emails: set[str] = set(search_contacts_for_domain(domain, name))
         tech_stack = (co.get("technology_names") or co.get("technologies_found") or [])
+        # Compose a minimal lead dict for the persona-match check (we use
+        # company_profile from the classifier plus the tech_stack we just
+        # collected; matches_persona is a soft signal so the lead is
+        # still inserted even when the check is False).
+        match_blob = {
+            "company_name": name,
+            "tech_stack": list(tech_stack) if isinstance(tech_stack, list) else [],
+            "company_profile": cls["profile"],
+        }
+        matches_p = _matches_persona(match_blob, buyer_persona) if buyer_persona else None
         lead = db.insert_lead(
             company_name=name,
             website=website,
@@ -646,9 +977,94 @@ def prospect(
             contact_email=sorted(emails)[0] if emails else None,
             company_profile=cls["profile"],
             buyer_persona=buyer_persona,
+            matches_persona=matches_p,
         )
         new_leads.append(lead)
+        _record_event(
+            agent="prospector",
+            kind="lead_created",
+            summary=f"NEW {name} ({website}) — saved as raw" + (f" [BP]" if matches_p else (f" [broader search — no persona match]" if buyer_persona else "")),
+            detail={"company": name, "website": website, "emails": sorted(emails), "lead_id": lead.get("id"), "tech_count": len(tech_stack), "matches_persona": matches_p, "persona": buyer_persona},
+        )
         print(f"[prospector] NEW {name} ({website}) status=raw emails={sorted(emails)}")
+
+    # 1b) Free fallback when TheirStack's tech search was too noisy to
+    #     produce any buyers (its free tier often returns IT services
+    #     companies for buyer-tech filters). Serper-based discovery searches
+    #     LinkedIn for buyer-indicator queries and resolves each company's
+    #     real website domain. We only run it when TheirStack's results
+    #     were entirely filtered out, and we re-run the classifier +
+    #     insert loop over the new companies so they get the same dedupe
+    #     / scoring / quality treatment.
+    if not new_leads and not known_leads:
+        from webapp import _record_event
+        _record_event(
+            agent="prospector",
+            kind="serper_fallback",
+            summary="TheirStack returned nothing usable; falling back to Serper/DuckDuckGo discovery",
+            detail={"reason": "no_companies_or_all_filtered"},
+        )
+        try:
+            extra = _serper_discover(target_product, limit)
+            print(f"[prospector] Serper fallback returned {len(extra)} companies")
+        except Exception as exc:
+            print(f"[prospector] Serper fallback failed ({exc}); nothing to add.")
+            extra = []
+        for co in extra:
+            cls = classify_company(co)
+            domain = (co.get("domain") or "").strip().lower()
+            name = co.get("name") or co.get("domain") or "unknown"
+            if cls["action"] == "exclude":
+                _record_event(
+                    agent="prospector",
+                    kind="exclude",
+                    summary=f"Excluded {name} ({domain}) (Serper fallback)",
+                    detail={"company": name, "domain": domain, "reasons": cls["reasons"]},
+                )
+                continue
+            kept.append((co, cls))
+            website = f"https://{domain}" if domain else None
+            if not website:
+                continue
+            existing = db.find_lead_by_website(website)
+            if existing:
+                known_leads.append(existing)
+                _record_event(
+                    agent="prospector",
+                    kind="duplicate",
+                    summary=f"DUPLICATE {name} (Serper fallback) — already in DB",
+                    detail={"company": name, "website": website, "existing_status": existing.get("status")},
+                )
+                continue
+            try:
+                emails: set[str] = set(search_contacts_for_domain(domain, name))
+            except Exception:
+                emails = set()
+            tech_stack = (co.get("technology_names") or co.get("technologies_found") or [])
+            match_blob = {
+                "company_name": name,
+                "tech_stack": list(tech_stack) if isinstance(tech_stack, list) else [],
+                "company_profile": cls["profile"],
+            }
+            matches_p = _matches_persona(match_blob, buyer_persona) if buyer_persona else None
+            lead = db.insert_lead(
+                company_name=name,
+                website=website,
+                tech_stack=list(tech_stack) if isinstance(tech_stack, list) else [],
+                source="serper",
+                target_product=target_product,
+                contact_email=sorted(emails)[0] if emails else None,
+                company_profile=cls["profile"],
+                buyer_persona=buyer_persona,
+                matches_persona=matches_p,
+            )
+            new_leads.append(lead)
+            _record_event(
+                agent="prospector",
+                kind="lead_created",
+                summary=f"NEW {name} ({website}) (Serper fallback)" + (f" [BP]" if matches_p else (f" [broader search — no persona match]" if buyer_persona else "")),
+                detail={"company": name, "website": website, "emails": sorted(emails), "lead_id": lead.get("id"), "matches_persona": matches_p, "persona": buyer_persona},
+            )
 
     if kept and not new_leads:
         # Upstream search actually found companies, but every one is a

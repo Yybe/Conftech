@@ -516,6 +516,7 @@ def _rule_based_score(
 
 def score_one(lead: dict[str, Any]) -> dict[str, Any]:
     """Score a single researched lead with an evidence-cited justification."""
+    from webapp import _record_event
     scraped = lead.get("scraped_data", {}) or {}
     evidence = _pick_evidence(scraped)
     target_product = lead.get("target_product") or "unknown"
@@ -528,6 +529,14 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
         lead.get("buyer_persona")
         or (lead.get("company_profile") or {}).get("buyer_persona")
         or ""
+    )
+
+    _record_event(
+        agent="scorer",
+        kind="start",
+        summary=f"Scoring {lead.get('company_name')}",
+        detail={"company": lead.get("company_name"), "lead_id": lead.get("id"), "evidence_count": len(evidence), "tech_count": len(lead.get("tech_stack") or []), "persona": persona},
+        lead_id=lead.get("id"),
     )
 
     company = {
@@ -553,6 +562,7 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
         indent=2,
     )
 
+    used_fallback = False
     try:
         result = chat_json(
             load_prompt("scorer.md"),
@@ -567,20 +577,42 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
 
         allowed_urls = {str(e.get("url", "")).rstrip("/") for e in evidence if e.get("url")}
         validated = _validate_evidence(result.get("evidence"), allowed_urls, evidence)
+        _record_event(
+            agent="scorer",
+            kind="llm_score",
+            summary=f"LLM score: {fit_score} for {lead.get('company_name')}",
+            detail={"raw_fit": fit_score, "reasoning": reasoning, "citations": len(validated), "valid_citations": [c["claim"] for c in validated[:4]]},
+            lead_id=lead.get("id"),
+        )
     except Exception as exc:
         # LLM down / rate-limited -> deterministic evidence-based fallback.
         print(
             f"[scorer] LLM failed for {lead.get('company_name')} ({exc}); "
             "using deterministic evidence fallback."
         )
+        used_fallback = True
         fb = _rule_based_score(target_product, scraped, lead.get("tech_stack", []))
         fit_score = fb["fit_score"]
         reasoning = fb["reasoning"]
         validated = fb["evidence"]
+        _record_event(
+            agent="scorer",
+            kind="fallback_score",
+            summary=f"LLM unavailable, using deterministic fallback: {fit_score}",
+            detail={"raw_fit": fit_score, "reasoning": reasoning, "error": str(exc)},
+            lead_id=lead.get("id"),
+        )
 
     # Buyer-intent caps (deterministic, sourced).
     sat_pen = _saturated_penalty(lead, target_product)
     comp_pen = _competitor_penalty(lead, target_product)
+    _record_event(
+        agent="scorer",
+        kind="buyer_intent_check",
+        summary=f"Buyer-intent penalties: saturated={sat_pen}, competitor={comp_pen}",
+        detail={"saturated_penalty": sat_pen, "competitor_penalty": comp_pen, "tech_stack_size": len(lead.get("tech_stack") or [])},
+        lead_id=lead.get("id"),
+    )
     extra_notes: list[str] = []
     if sat_pen:
         extra_notes.append(
@@ -595,20 +627,36 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
     if sat_pen or comp_pen:
         # Apply with a cap so a deeply-saturated competitor can't be raised
         # above the rubric's hard cap just because the LLM gave 70.
+        pre_cap = fit_score
         fit_score = min(fit_score, 30) + sat_pen + comp_pen
         fit_score = max(0, fit_score)
         if extra_notes:
             note = "Buyer-intent adjustments: " + "; ".join(extra_notes)
             reasoning = f"{reasoning}\n\n{note}".strip() if reasoning else note
+        _record_event(
+            agent="scorer",
+            kind="buyer_intent_caps_applied",
+            summary=f"Score adjusted for buyer intent: {pre_cap} -> {fit_score}",
+            detail={"before": pre_cap, "after": fit_score, "saturated_pen": sat_pen, "competitor_pen": comp_pen},
+            lead_id=lead.get("id"),
+        )
 
     # Poor cold-outreach target penalty (deterministic, sourced).
     penalty, filter_findings = _filter_penalty(lead)
     if penalty:
+        pre = fit_score
         fit_score = max(0, fit_score + penalty)
         note = "Score adjusted for cold-outreach fit: " + "; ".join(
             f["reason"] for f in filter_findings
         )
         reasoning = f"{reasoning}\n\n{note}".strip() if reasoning else note
+        _record_event(
+            agent="scorer",
+            kind="segment_penalty",
+            summary=f"Segment penalty applied: {pre} -> {fit_score}",
+            detail={"before": pre, "after": fit_score, "filter_findings": [f["reason"] for f in filter_findings]},
+            lead_id=lead.get("id"),
+        )
 
     # Deterministic confidence + human-readable top reasons.
     confidence = compute_confidence(scraped, lead.get("tech_stack", []))
@@ -621,7 +669,7 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
     if filter_findings:
         scraped["filter_findings"] = filter_findings
 
-    return db.update_lead(
+    updated = db.update_lead(
         lead["id"],
         fit_score=fit_score,
         confidence_score=confidence,
@@ -629,12 +677,27 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
         scraped_data=scraped,
         status=db.PENDING_REVIEW,
     )
+    _record_event(
+        agent="scorer",
+        kind="done",
+        summary=f"{lead.get('company_name')} -> fit={fit_score}, conf={confidence} (pending_review)" + (" [fallback]" if used_fallback else ""),
+        detail={"fit_score": fit_score, "confidence": confidence, "top_reasons": [r["reason"] for r in top_reasons[:4]], "used_fallback": used_fallback},
+        lead_id=lead.get("id"),
+    )
+    return updated
 
 
 def score(status: str = db.RESEARCHED, limit: int = 20) -> list[dict[str, Any]]:
     """Score all leads in `status` (default: researched)."""
     leads = db.get_leads_by_status(status, limit=limit)
     print(f"[scorer] Scoring {len(leads)} lead(s)")
+    from webapp import _record_event
+    _record_event(
+        agent="scorer",
+        kind="batch_start",
+        summary=f"Scorer batch: {len(leads)} lead(s) with status={status}",
+        detail={"count": len(leads), "status": status},
+    )
     done: list[dict[str, Any]] = []
     for lead in leads:
         try:
@@ -648,6 +711,14 @@ def score(status: str = db.RESEARCHED, limit: int = 20) -> list[dict[str, Any]]:
         except Exception as exc:
             db.update_lead(lead["id"], status=db.ERROR)
             print(f"[scorer] ERROR {lead.get('company_name')}: {exc}")
+            from webapp import _record_event
+            _record_event(
+                agent="scorer",
+                kind="error",
+                summary=f"ERROR {lead.get('company_name')}: {exc}",
+                detail={"company": lead.get("company_name"), "error": str(exc)},
+                lead_id=lead.get("id"),
+            )
     return done
 
 

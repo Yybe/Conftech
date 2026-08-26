@@ -41,6 +41,7 @@ create table if not exists public.leads (
     website          text,
     target_product   text,
     buyer_persona    text,
+    matches_persona  boolean,
     tech_stack       jsonb not null default '[]'::jsonb,
     contact_email    text,
     fit_score        integer,
@@ -57,6 +58,7 @@ create table if not exists public.leads (
 alter table public.leads add column if not exists confidence_score integer;
 alter table public.leads add column if not exists company_profile jsonb not null default '{}'::jsonb;
 alter table public.leads add column if not exists buyer_persona text;
+alter table public.leads add column if not exists matches_persona boolean;
 
 create index if not exists leads_status_idx on public.leads (status);
 
@@ -200,17 +202,24 @@ def insert_lead(
     contact_email: str | None = None,
     company_profile: dict | None = None,
     buyer_persona: str | None = None,
+    matches_persona: bool | None = None,
 ) -> dict[str, Any]:
     """Insert a lead; if a lead with the same website exists, return it unchanged
     (dedupe). Returns the lead row dict.
 
-    NOTE: buyer_persona is written into the `company_profile.buyer_persona`
-    sub-field (and stashed in the `target_product` field's name for display)
-    until the user runs the schema migration that adds the dedicated column.
-    The DB column is added by the SCHEMA_SQL in this module when
-    `init_schema()` can reach the Supabase Management API or `/pg/query`;
-    on projects where those endpoints are disabled, the persona still
-    persists via the JSONB fallback so the scorer can read it back.
+    `matches_persona` is the cheap overlap check the prospector runs after
+    the search: True if the lead's tech_stack / industry / employee count
+    agrees with the buyer's persona, False if it doesn't. The UI shows a
+    "BP" chip when True so the reviewer can see which leads were persona-
+    matched vs which were broader-search fallback finds.
+
+    NOTE: buyer_persona / matches_persona are also written into the
+    company_profile JSONB so the data survives even when the dedicated
+    columns haven't been added by the schema migration yet. The DB columns
+    are added by the SCHEMA_SQL in this module when `init_schema()` can
+    reach the Supabase Management API or `/pg/query`; on projects where
+    those endpoints are disabled, the persona still persists via the JSONB
+    fallback so the scorer and UI can read it back.
     """
     client = get_client()
     if website:
@@ -228,37 +237,47 @@ def insert_lead(
         "status": RAW,
         "target_product": target_product,
     }
-    if company_profile or buyer_persona:
-        # Merge buyer_persona into the existing company_profile JSONB so the
-        # data survives even when the dedicated text column hasn't been added
-        # by the schema migration yet.
+    if company_profile or buyer_persona or matches_persona is not None:
+        # Merge persona / matches_persona into the company_profile JSONB
+        # so the data survives even when the dedicated columns haven't
+        # been added by the schema migration yet.
         profile = dict(company_profile or {})
         if buyer_persona:
             profile["buyer_persona"] = buyer_persona
+        if matches_persona is not None:
+            profile["matches_persona"] = matches_persona
         row["company_profile"] = profile
     if contact_email:
         row["contact_email"] = contact_email
 
-    # Try to write the dedicated column too. If the migration hasn't run yet
-    # the insert will fail with a "column not found" error (PostgREST reports
-    # this as either 42703 column-doesn't-exist or PGRST204 schema-cache
-    # miss depending on which layer rejected it); we retry without that key
-    # in either case. The persona still lands in `company_profile.buyer_persona`
-    # so the scorer can read it back.
+    # Try to write the dedicated columns too. If the migration hasn't run
+    # yet the insert will fail with a "column not found" error (PostgREST
+    # reports this as either 42703 column-doesn't-exist or PGRST204
+    # schema-cache miss depending on which layer rejected it); we retry
+    # without those keys in either case. The persona still lands in
+    # `company_profile.buyer_persona` so the scorer can read it back.
     try:
         if buyer_persona:
             row["buyer_persona"] = buyer_persona
+        if matches_persona is not None:
+            row["matches_persona"] = matches_persona
         res = client.table("leads").insert(row).execute()
         return res.data[0]
     except Exception as exc:
         msg = str(exc)
-        col_missing = (
+        col_missing_persona = (
             ("42703" in msg and "buyer_persona" in msg)
             or ("PGRST204" in msg and "buyer_persona" in msg)
             or ("Could not find the 'buyer_persona' column" in msg)
         )
-        if col_missing:
+        col_missing_matches = (
+            ("42703" in msg and "matches_persona" in msg)
+            or ("PGRST204" in msg and "matches_persona" in msg)
+            or ("Could not find the 'matches_persona' column" in msg)
+        )
+        if col_missing_persona or col_missing_matches:
             row.pop("buyer_persona", None)
+            row.pop("matches_persona", None)
             res = client.table("leads").insert(row).execute()
             return res.data[0]
         raise
@@ -339,7 +358,8 @@ def list_target_products() -> dict[str, int]:
 def update_lead(lead_id: str, **fields: Any) -> dict[str, Any] | None:
     """Update arbitrary columns; silently ignores unknown keys."""
     allowed = {
-        "company_name", "website", "target_product", "buyer_persona", "tech_stack", "contact_email",
+        "company_name", "website", "target_product", "buyer_persona", "matches_persona",
+        "tech_stack", "contact_email",
         "fit_score", "confidence_score", "reasoning", "status", "source",
         "scraped_data", "company_profile",
     }

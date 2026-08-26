@@ -231,7 +231,43 @@ _JOB_STATE: dict[str, Any] = {
     "last_error_kind": None,
     "last_error_hint": None,
     "acknowledged": False,
+    "events": [],
 }
+
+# Cap the in-memory event log so a long pipeline doesn't OOM the FastAPI
+# process. The UI only needs the most recent events; older ones fall off.
+_MAX_EVENTS = 200
+
+
+def _record_event(
+    agent: str,
+    kind: str,
+    summary: str,
+    detail: Any = None,
+    lead_id: str | None = None,
+) -> None:
+    """Append one structured event to the in-memory activity stream.
+
+    Any agent can call this (via webapp._record_event) to publish a step
+    for the live dashboard. `kind` is a free-form short tag (e.g. "llm_call",
+    "theirstack_query", "page_crawled", "evidence_added", "score"); `summary`
+    is the human-readable one-liner shown in the activity panel; `detail`
+    is the structured payload (dicts/lists/strings) that the user can expand
+    in the UI to see exactly what the agent did.
+    """
+    _JOB_STATE.setdefault("events", []).append(
+        {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "agent": agent,
+            "kind": kind,
+            "summary": summary,
+            "detail": detail,
+            "lead_id": lead_id,
+        }
+    )
+    # Trim the buffer. Drop the oldest non-summary events first, then any.
+    if len(_JOB_STATE["events"]) > _MAX_EVENTS:
+        _JOB_STATE["events"] = _JOB_STATE["events"][-_MAX_EVENTS:]
 
 
 def _job_start(target_product: str, limit: int) -> None:
@@ -254,6 +290,7 @@ def _job_start(target_product: str, limit: int) -> None:
             "last_error_kind": None,
             "last_error_hint": None,
             "acknowledged": False,
+            "events": [],
         }
     )
 
@@ -267,8 +304,22 @@ def _job_update(stage: str, stage_label: str, **extra: Any) -> None:
 def _record_incident(stage: str, source: str, exc: Exception) -> None:
     """Append a structured incident so the UI can show the SPECIFIC failure
     (TheirStack 402, Serper 400, LLM 500, ...) instead of a generic message."""
+    from prospector import TheirStackQuotaError  # imported lazily to avoid cycle
     msg = str(exc)
-    kind = classify_incident_kind(f"{source} {msg}")
+    if isinstance(exc, TheirStackQuotaError):
+        # All TheirStack keys are depleted / rate-limited. The prospector
+        # already records per-call `theirstack_error` events; this is the
+        # "final" incident with the user-facing summary and a friendly hint.
+        kind = "theirstack_all_keys_exhausted"
+        if not _JOB_STATE.get("last_error_hint"):
+            _JOB_STATE["last_error_hint"] = (
+                "All configured TheirStack keys are out of credits (402) or "
+                "rate-limited (429). Add more keys to THEIRSTACK_API_KEY_2 / _3 "
+                "in .env, or top up credits at theirstack.com. The pipeline will "
+                "keep trying to find leads via the Serper/DuckDuckGo fallback path."
+            )
+    else:
+        kind = classify_incident_kind(f"{source} {msg}")
     incident = {
         "stage": stage,
         "source": source,
@@ -372,6 +423,49 @@ def _run_pipeline_bg(target_product: str, limit: int, buyer_persona: str = "") -
         except Exception as exc:
             _record_incident("scoring", "scorer", exc)
             raise
+
+        # Honest "no real buyers" check: if every inserted lead was scored
+        # as a poor fit (<=30) the prospector returned low-quality
+        # matches (typical: TheirStack's free-tier tech search surfaced
+        # competitors / saturated companies that the legacy-stack exemption
+        # let through). Surface this to the user instead of leaving them
+        # staring at a queue of fit=0 leads.
+        if new_leads:
+            try:
+                rescored = db.get_client().table("leads").select("id, fit_score").in_("id", [l["id"] for l in new_leads]).execute()
+                good = [r for r in (rescored.data or []) if (r.get("fit_score") or 0) > 30]
+            except Exception:
+                good = []
+            if not good and len(new_leads) > 0:
+                from prospector import NoBuyersFoundError
+                msg = (
+                    f"Prospector inserted {len(new_leads)} candidate(s) for "
+                    f"'{target_product}', but the scorer flagged every one "
+                    f"as a poor fit (fit<=30). The upstream search "
+                    f"(TheirStack / Serper) likely surfaced competitors or "
+                    f"saturated companies instead of buyers. Try a "
+                    f"different target product, broaden the buyer persona, "
+                    f"or increase the limit to get a wider search."
+                )
+                _record_event(
+                    agent="prospector",
+                    kind="no_buyers",
+                    summary="No real buyers found — every inserted lead scored fit<=30",
+                    detail={"new_lead_count": len(new_leads), "good_fit_count": len(good), "target_product": target_product},
+                )
+                # Mark all of them as rejected so they don't sit in pending_review
+                # forever confusing the next reviewer.
+                try:
+                    for l in new_leads:
+                        db.update_lead(l["id"], status=db.REJECTED, reasoning=(l.get("reasoning") or "") + "\n\n[rejected: no_buyers] no real buyer for this target — see job banner.")
+                except Exception:
+                    pass
+                _JOB_STATE["leads_found"] = 0
+                _job_update("scoring", "Scoring fit", message=msg)
+                _job_finish(error=msg)
+                print(f"[web] no buyers: {msg}")
+                return
+
         _job_finish()
         print(f"[web] pipeline done: {db.count_by_status()}")
     except NoNewLeadsError as exc:
@@ -600,7 +694,32 @@ def build_app() -> FastAPI:
 
     @app.get("/api/job/status")
     def api_job_status():
-        return dict(_JOB_STATE)
+        # The activity panel polls /api/job/events separately (faster cadence),
+        # but we also include the last few events here so any client that only
+        # hits /status still sees the agent's recent activity.
+        snapshot = dict(_JOB_STATE)
+        events = snapshot.get("events") or []
+        snapshot["events"] = events[-50:]  # cap to last 50 for the lightweight poll
+        return snapshot
+
+    @app.get("/api/job/events")
+    def api_job_events(since: int = 0):
+        """Return the agent activity stream (all events, or events after index
+        `since` for incremental polling).
+
+        Each event is {ts, agent, kind, summary, detail, lead_id}. The UI
+        shows the most recent first; `detail` is the structured payload the
+        user can expand (LLM prompts, API requests, evidence rows, scores).
+        """
+        events = list(_JOB_STATE.get("events") or [])
+        return {
+            "running": _JOB_STATE.get("running", False),
+            "total": len(events),
+            "events": events[since:],
+            "stage": _JOB_STATE.get("stage"),
+            "stage_label": _JOB_STATE.get("stage_label"),
+            "message": _JOB_STATE.get("message"),
+        }
 
     @app.get("/api/job/last_error")
     def api_job_last_error():

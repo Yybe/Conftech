@@ -537,40 +537,104 @@ def _stack_signal_evidence(lead: dict[str, Any], homepage: str, homepage_title: 
 
 def research_one(lead: dict[str, Any]) -> dict[str, Any]:
     """Crawl a lead's website (multi-page) and persist findings with evidence."""
+    from webapp import _record_event
     url = lead.get("website")
     if not url:
         raise ValueError(f"Lead {lead['id']} has no website")
 
     prompt = load_prompt("researcher.md") + "\n\nWebsite to analyze: " + url
+    _record_event(
+        agent="researcher",
+        kind="start",
+        summary=f"Crawling {url}",
+        detail={"url": url, "lead_id": lead.get("id"), "company": lead.get("company_name")},
+        lead_id=lead.get("id"),
+    )
 
     try:
         pages = _crawl_pages(url)
+        _record_event(
+            agent="researcher",
+            kind="pages_crawled",
+            summary=f"Crawled {len(pages)} pages on {url}",
+            detail={"url": url, "pages": [p["url"] for p in pages]},
+            lead_id=lead.get("id"),
+        )
         emails_by_url = [
             (p["url"], email)
             for p in pages
             for email in _scan_page_emails(p["text"])
         ]
+        _record_event(
+            agent="researcher",
+            kind="emails_found",
+            summary=f"Found {len(emails_by_url)} on-page email mention(s)",
+            detail={"count": len(emails_by_url), "emails": sorted(set(e for _, e in emails_by_url))[:20]},
+            lead_id=lead.get("id"),
+        )
 
         home_analysis: dict[str, Any] | None = None
         extractor = "bs4+gemma"
         try:
+            _record_event(
+                agent="researcher",
+                kind="scrapegraphai_start",
+                summary="Rendering homepage in headless browser (ScrapeGraphAI)",
+                detail={"url": url},
+                lead_id=lead.get("id"),
+            )
             home_text = _scrapegraphai_render(url)
             home_analysis = _analyze_page(url, home_text, prompt, page_title=pages[0].get("title", ""))
             extractor = "scrapegraphai+bs4+gemma"
+            _record_event(
+                agent="researcher",
+                kind="scrapegraphai_done",
+                summary=f"Homepage analyzed: {len(home_analysis.get('evidence', []))} evidence",
+                detail={"evidence_count": len(home_analysis.get('evidence', [])), "summary": home_analysis.get("summary", "")[:240]},
+                lead_id=lead.get("id"),
+            )
         except Exception as exc:
             print(f"[researcher] ScrapeGraphAI unavailable for {url} ({exc}); trying BS4+LLM.")
+            _record_event(
+                agent="researcher",
+                kind="scrapegraphai_fallback",
+                summary=f"ScrapeGraphAI unavailable ({exc}); falling back to BS4+LLM",
+                detail={"error": str(exc)},
+                lead_id=lead.get("id"),
+            )
 
         page_results: list[tuple[str, dict[str, Any]]] = []
         for i, page in enumerate(pages):
             if i == 0 and home_analysis is not None:
                 page_results.append((page["url"], home_analysis))
                 continue
+            _record_event(
+                agent="researcher",
+                kind="page_analyze",
+                summary=f"LLM analysis: {page['url']}",
+                detail={"url": page["url"], "title": page.get("title", "")},
+                lead_id=lead.get("id"),
+            )
             try:
                 page_results.append(
                     (page["url"], _analyze_page(page["url"], page["text"], prompt, page_title=page.get("title", "")))
                 )
+                _record_event(
+                    agent="researcher",
+                    kind="evidence_added",
+                    summary=f"Found {len(page_results[-1][1].get('evidence', []))} evidence on {page['url']}",
+                    detail={"url": page["url"], "evidence": page_results[-1][1].get("evidence", [])[:4]},
+                    lead_id=lead.get("id"),
+                )
             except Exception as exc2:
                 print(f"[researcher] BS4+LLM failed for {page['url']} ({exc2}); raw fallback for this page.")
+                _record_event(
+                    agent="researcher",
+                    kind="page_fallback",
+                    summary=f"LLM failed on {page['url']} ({exc2}); using raw fallback",
+                    detail={"error": str(exc2)},
+                    lead_id=lead.get("id"),
+                )
                 summary = page["meta"] or page["title"]
                 evidence = (
                     [
@@ -588,9 +652,23 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
                 page_results.append((page["url"], {"summary": summary, "evidence": evidence}))
 
         findings = _finalize(url, pages, page_results, emails_by_url, extractor)
+        _record_event(
+            agent="researcher",
+            kind="buying_signals",
+            summary=f"Deterministic buying-signal scan: {len(findings.get('buying_signals', []))} matches",
+            detail={"count": len(findings.get("buying_signals", [])), "buying_signals": findings.get("buying_signals", [])[:8]},
+            lead_id=lead.get("id"),
+        )
     except Exception as exc:
         # Tier 3: plain BS4 for every page (no LLM) - the always-works safety net.
         print(f"[researcher] LLM path failed for {url} ({exc}); using raw BS4 fallback.")
+        _record_event(
+            agent="researcher",
+            kind="tier3_fallback",
+            summary=f"Whole-pipeline LLM path failed ({exc}); using raw BS4 fallback",
+            detail={"error": str(exc)},
+            lead_id=lead.get("id"),
+        )
         try:
             pages = _crawl_pages(url)
         except Exception as exc3:
@@ -627,21 +705,43 @@ def research_one(lead: dict[str, Any]) -> dict[str, Any]:
         1 for e in findings["evidence"] if e["type"] in ("pain_point", "product_mention", "summary")
     )
     if signal_count == 0 and not findings["contact_emails"] and len(findings["summary"]) < 60:
+        _record_event(
+            agent="researcher",
+            kind="quality_gate_fail",
+            summary=f"Quality gate: no usable content for {url}",
+            detail={"url": url, "signal_count": signal_count, "email_count": len(findings.get("contact_emails", []))},
+            lead_id=lead.get("id"),
+        )
         db.update_lead(lead["id"], scraped_data=findings, status=db.ERROR)
         raise RuntimeError(f"quality gate: no usable content found for {url}")
 
-    return db.update_lead(
+    updated = db.update_lead(
         lead["id"],
         scraped_data=findings,
         contact_email=(findings["contact_emails"] or [None])[0],
         status=db.RESEARCHED,
     )
+    _record_event(
+        agent="researcher",
+        kind="done",
+        summary=f"{lead.get('company_name')} -> researched ({len(findings['evidence'])} evidence rows)",
+        detail={"lead_id": lead.get("id"), "evidence_count": len(findings["evidence"]), "buying_signals": len(findings.get("buying_signals", [])), "emails": findings.get("contact_emails", [])[:5]},
+        lead_id=lead.get("id"),
+    )
+    return updated
 
 
 def research(status: str = db.RAW, limit: int = 20) -> list[dict[str, Any]]:
     """Process all leads in `status` (default: raw)."""
     leads = db.get_leads_by_status(status, limit=limit)
     print(f"[researcher] Processing {len(leads)} lead(s) with status={status}")
+    from webapp import _record_event
+    _record_event(
+        agent="researcher",
+        kind="batch_start",
+        summary=f"Researcher batch: {len(leads)} lead(s) with status={status}",
+        detail={"count": len(leads), "status": status},
+    )
     done: list[dict[str, Any]] = []
     for lead in leads:
         try:
@@ -650,6 +750,14 @@ def research(status: str = db.RAW, limit: int = 20) -> list[dict[str, Any]]:
             print(f"[researcher] {updated.get('company_name')} -> researched")
         except Exception as exc:
             print(f"[researcher] ERROR {lead.get('company_name')}: {exc}")
+            from webapp import _record_event
+            _record_event(
+                agent="researcher",
+                kind="error",
+                summary=f"ERROR {lead.get('company_name')}: {exc}",
+                detail={"company": lead.get("company_name"), "error": str(exc)},
+                lead_id=lead.get("id"),
+            )
     return done
 
 

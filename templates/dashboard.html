@@ -56,7 +56,7 @@
         and score them for fit — all in the background.
       </p>
     </div>
-    <form method="post" action="/pipeline/run" class="flex w-full flex-col gap-3 sm:w-auto">
+    <form method="post" action="/pipeline/run" id="pipeline-form" class="flex w-full flex-col gap-3 sm:w-auto">
       <div class="flex flex-wrap items-center gap-3">
         <input
           type="text"
@@ -85,21 +85,62 @@
       <input
         type="text"
         name="buyer_persona"
-        placeholder="Buyer persona (industry, size, existing tech) — e.g. mid-market wholesale distributors 50-2000 employees with QuickBooks or no modern WMS"
+        placeholder="(Optional) Buyer persona — e.g. mid-market wholesale distributors 50-2000 employees with QuickBooks or no modern WMS. Leave blank for a broader search."
         class="field w-full text-sm"
         style="background:rgba(15,22,38,0.5); color:var(--text-strong); border-color:var(--border)"
       >
       <div class="text-[11px]" style="color:var(--faint)">
-        Without a persona the prospector will return any company in the target industry — including saturated incumbents and competitors. With a persona, the prospector steers toward under-instrumented mid-market prospects and the scorer penalises already-saturated stacks and same-category vendors.
+        <strong>Buyer persona is optional.</strong> With a persona, the prospector steers toward that industry / size / tech posture — and tags the leads that actually match with a <strong style="color:var(--accent)">BP</strong> chip. Without a persona, the search is broader and you'll see more leads (some of which won't match the persona). When the strict persona search returns nothing, the system automatically falls back to a broader search.
       </div>
     </form>
   </div>
 </section>
 
-{# ---------- Pipeline status strip ----------
-   Reads as a stage progression, not seven identical boxes. Every status is
-   individually clickable through to /leads?status=<s>, same as before. #}
-<section class="mt-8" data-reveal>
+{# ---------- Persistent red error banner (block + dismiss) ---------- #}
+{% if job_banner %}
+<section class="mt-2" data-reveal>
+  <div class="rounded-xl border px-4 py-4 text-sm"
+       style="border-color:#7f1d1d; background:rgba(127,29,29,0.18); color:#fecaca">
+    <div class="flex items-start gap-3">
+      <svg class="mt-0.5 h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      <div class="min-w-0 flex-1">
+        <div class="text-sm font-semibold" style="color:#fda4af">
+          Pipeline stopped — {{ job_banner.kind or 'upstream error' }}
+        </div>
+        {% if job_banner.headline %}
+        <div class="mt-1 text-xs" style="color:#fecaca">
+          <span class="font-semibold">{{ job_banner.headline.source }}</span>
+          {% if job_banner.headline.stage %} · {{ job_banner.headline.stage }}{% endif %}
+          <div class="mt-0.5 font-mono text-[11px]" style="color:#fca5a5">{{ job_banner.headline.error }}</div>
+        </div>
+        {% endif %}
+        {% if job_banner.hint %}
+        <div class="mt-2 text-xs font-medium" style="color:#fecaca">
+          <span class="font-semibold uppercase tracking-wider" style="color:#fda4af">What to do:</span>
+          {{ job_banner.hint }}
+        </div>
+        {% endif %}
+        {% if job_banner.incidents and job_banner.incidents|length > 1 %}
+        <details class="mt-2 text-xs">
+          <summary class="cursor-pointer font-medium" style="color:#fda4af">{{ job_banner.incidents|length }} incident(s)</summary>
+          <ul class="mt-1.5 space-y-1">
+            {% for inc in job_banner.incidents %}
+            <li><span class="font-mono text-[11px]" style="color:#fca5a5">{{ inc.kind }} · {{ inc.source }} — {{ inc.error }}</span></li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </div>
+      <form onsubmit="event.preventDefault(); fetch('/api/job/ack',{method:'POST'}).then(()=>location.reload());">
+        <button type="submit" class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold"
+                style="background:rgba(255,255,255,0.08); color:#fda4af" title="Dismiss this error">Dismiss</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{# ---------- Run pipeline ---------- #}
   <div class="mb-3 flex items-center justify-between">
     <h2 class="type-heading">Pipeline</h2>
     <span class="type-meta">{{ counts.values()|sum }} total leads</span>
@@ -133,6 +174,77 @@
       {% endfor %}
       <span class="text-[11px] font-medium" style="color:var(--faint)">terminal</span>
     </div>
+  </div>
+</section>
+
+{# ---------- Pipeline status widget ----------
+   Always-visible summary of the current / most recent run. Sits above the
+   activity panel so the user can tell at a glance: idle, running, done with
+   results, or failed. Updates via the same /api/job/events poll as the
+   activity feed. #}
+<section class="mt-8" data-reveal>
+  <div id="status-widget" class="panel p-4">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      {# Big status pill - JS updates the colour and text. #}
+      <div class="flex items-center gap-2.5">
+        <span id="status-dot" class="inline-block h-2.5 w-2.5 rounded-full" style="background:#64748b"></span>
+        <span id="status-label" class="text-sm font-bold uppercase tracking-wider" style="color:var(--muted)">Idle</span>
+      </div>
+      <span class="text-xs" style="color:var(--border-strong)">|</span>
+      <div class="min-w-0 flex-1">
+        <div id="status-target" class="truncate text-sm font-semibold" style="color:var(--text-strong)">No run yet</div>
+        <div id="status-message" class="truncate text-xs" style="color:var(--muted)">Run the pipeline above to start the agents.</div>
+      </div>
+      <div class="flex items-center gap-3 text-xs" style="color:var(--muted)">
+        <div class="flex items-center gap-1.5">
+          <span class="font-bold tabular-nums" id="status-leads-new" style="color:var(--ok)">0</span>
+          <span>new</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="font-bold tabular-nums" id="status-leads-known" style="color:var(--warn)">0</span>
+          <span>known</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="font-bold tabular-nums" id="status-leads-excluded" style="color:var(--faint)">0</span>
+          <span>filtered</span>
+        </div>
+      </div>
+    </div>
+    {# "Pipeline already running" notice - shown when a job is in flight. #}
+    <div id="status-locked" class="mt-3 hidden items-center gap-2 rounded-md px-3 py-2 text-xs"
+         style="background:rgba(56,189,248,0.1); color:var(--accent); border:1px solid var(--accent-border)">
+      <svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+      <span class="font-semibold">Pipeline already running.</span>
+      <span style="color:var(--muted)">Wait for it to finish or it will collide with itself.</span>
+    </div>
+  </div>
+</section>
+
+{# ---------- Live agent activity ----------
+   Every step each agent takes (LLM call, TheirStack query, page crawl,
+   evidence found, score, ...) is published to /api/job/events. This panel
+   polls that endpoint every 1.5s and renders the stream newest-first with
+   per-agent icons, kind badges, and an expandable JSON detail view. Open
+   this panel in a demo and the audience sees exactly what each agent is
+   doing in real time. #}
+<section id="activity-panel" class="mt-6" data-reveal>
+  <div class="mb-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <h2 class="type-heading">Agent activity</h2>
+      <span id="activity-status" class="chip" style="background:rgba(15,22,38,0.6); color:var(--faint)">idle</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="activity-count" class="text-xs" style="color:var(--faint)">0 events</span>
+      <button type="button" id="activity-clear" class="btn btn--ghost" style="padding:4px 10px;font-size:11px" hidden>Clear</button>
+    </div>
+  </div>
+  <div class="panel overflow-hidden">
+    <ul id="activity-list" class="divide-y divide-slate-800/60 text-sm" style="max-height:520px; overflow-y:auto;">
+      <li id="activity-empty" class="px-4 py-10 text-center" style="color:var(--faint)">
+        <svg class="mx-auto mb-2 h-6 w-6 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+        Run the pipeline above to see each agent's activity stream here.
+      </li>
+    </ul>
   </div>
 </section>
 
@@ -238,5 +350,263 @@
     </div>
   </div>
 </section>
+
+<script>
+(function () {
+  'use strict';
+  // ----- Submit the pipeline form without leaving the dashboard -----
+  // The server still 303-redirects to /leads, but on the dashboard we
+  // intercept the submit, POST via fetch, and stay on the page so the
+  // activity panel can show the agents working in real time.
+  var form = document.getElementById('pipeline-form');
+  if (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      // Refuse the submit if a job is already running. The status
+      // poller below will re-enable the button when the current job
+      // finishes.
+      var btn = form.querySelector('button[type=submit]');
+      if (btn && btn.disabled) return;
+      var data = new FormData(form);
+      if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); }
+      fetch('/pipeline/run', { method: 'POST', body: data, redirect: 'manual' })
+        .then(function () {
+          // Update the URL with the inputs (so a manual reload re-runs) but
+          // DO NOT navigate. The activity poller picks up the new job.
+          var params = new URLSearchParams();
+          for (var k of data.keys()) {
+            var v = data.get(k);
+            if (v != null && v !== '') params.set(k, v);
+          }
+          var qs = params.toString();
+          history.replaceState(null, '', '/' + (qs ? '?' + qs : ''));
+          // Force a quick poll cycle so the new job's events start streaming.
+          if (window.ConftechUI && typeof ConftechUI.refreshActivity === 'function') {
+            ConftechUI.refreshActivity();
+          }
+        })
+        .catch(function () {
+          // Network error - fall back to a real submit (so the server
+          // can still record the run).
+          form.submit();
+        });
+      // Note: the button is re-enabled by the status poller below when
+      // the job finishes (running=false). We intentionally do NOT
+      // re-enable in `.finally` so a double-click can't start a second
+      // run while the first is still in flight.
+    });
+  }
+})();
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var list = document.getElementById('activity-list');
+  var empty = document.getElementById('activity-empty');
+  var status = document.getElementById('activity-status');
+  var counter = document.getElementById('activity-count');
+  var clearBtn = document.getElementById('activity-clear');
+  // Status-widget refs.
+  var swDot = document.getElementById('status-dot');
+  var swLabel = document.getElementById('status-label');
+  var swTarget = document.getElementById('status-target');
+  var swMessage = document.getElementById('status-message');
+  var swNew = document.getElementById('status-leads-new');
+  var swKnown = document.getElementById('status-leads-known');
+  var swExcluded = document.getElementById('status-leads-excluded');
+  var swLocked = document.getElementById('status-locked');
+  var form = document.getElementById('pipeline-form');
+  var submitBtn = form ? form.querySelector('button[type=submit]') : null;
+  if (!list || !empty) return;
+  var since = 0;          // next-event index to fetch
+  var total = 0;          // server's reported total (for the counter)
+  var lastStatus = '';    // 'idle' | 'running' | 'done' | 'failed'
+  var agentColors = {
+    prospector: { icon: 'M21 21l-4.35-4.35M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z',  color: 'var(--accent)' },
+    researcher: { icon: 'M4 6h16M4 12h16M4 18h10',                              color: '#38bdf8' },
+    scorer:     { icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z', color: '#f59e0b' }
+  };
+  var kindClass = {
+    llm_call: 'chip--accent', llm_reply: 'chip--accent', llm_score: 'chip--accent',
+    fallback_score: 'chip--warn',
+    theirstack_query: 'chip--accent', theirstack_result: 'chip--ok', theirstack_error: 'chip--bad',
+    duplicate: 'chip--warn', lead_created: 'chip--ok', exclude: 'chip--bad',
+    pages_crawled: 'chip--ok', emails_found: 'chip--accent',
+    scrapegraphai_start: 'chip--accent', scrapegraphai_done: 'chip--ok', scrapegraphai_fallback: 'chip--warn',
+    page_analyze: 'chip--accent', evidence_added: 'chip--ok', page_fallback: 'chip--warn',
+    buying_signals: 'chip--ok', tier3_fallback: 'chip--warn', quality_gate_fail: 'chip--bad',
+    buyer_intent_check: 'chip--accent', buyer_intent_caps_applied: 'chip--warn',
+    segment_penalty: 'chip--warn', done: 'chip--ok', error: 'chip--bad',
+    start: 'chip--accent', batch_start: 'chip--accent', plan_request: 'chip--accent',
+    plan_fallback: 'chip--warn', dedupe: 'chip--accent', filter_summary: 'chip--accent',
+    contact_search: 'chip--accent'
+  };
+  function svg(d) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">' + d + '</svg>';
+  }
+  function badge(kind) {
+    var cls = kindClass[kind] || '';
+    return '<span class="chip ' + cls + '" style="font-size:10px;padding:1px 6px">' + (kind || '') + '</span>';
+  }
+  function safe(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
+  function fmtTime(iso) {
+    if (!iso) return '';
+    try { return iso.substring(11, 19); } catch (e) { return iso; }
+  }
+  function renderEvent(ev) {
+    var ag = ev.agent || 'system';
+    var meta = agentColors[ag] || { icon: 'M12 2v20M2 12h20', color: 'var(--muted)' };
+    var li = document.createElement('li');
+    li.className = 'activity-item px-4 py-2.5';
+    li.style.borderTop = '1px solid var(--border)';
+    var detail = '';
+    if (ev.detail != null) {
+      var json;
+      try { json = JSON.stringify(ev.detail, null, 2); } catch (e) { json = String(ev.detail); }
+      detail =
+        '<details class="mt-1.5">' +
+          '<summary class="cursor-pointer text-[11px] font-medium" style="color:var(--muted)">view details</summary>' +
+          '<pre class="mt-1.5 overflow-x-auto rounded-md p-2 text-[10.5px] leading-snug" style="background:rgba(0,0,0,0.4); color:#cbd5e1; max-height:280px">' + safe(json) + '</pre>' +
+        '</details>';
+    }
+    li.innerHTML =
+      '<div class="flex items-start gap-2.5">' +
+        '<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style="background:rgba(255,255,255,0.05); color:' + meta.color + '">' + svg(meta.icon) + '</div>' +
+        '<div class="min-w-0 flex-1">' +
+          '<div class="flex flex-wrap items-center gap-x-2 gap-y-1">' +
+            '<span class="text-[10.5px] font-semibold uppercase tracking-wider" style="color:' + meta.color + '">' + safe(ag) + '</span>' +
+            badge(ev.kind) +
+            '<span class="text-[10px] tabular-nums" style="color:var(--faint)">' + fmtTime(ev.ts) + '</span>' +
+          '</div>' +
+          '<div class="mt-0.5 text-[13px] leading-snug" style="color:var(--text-strong)">' + safe(ev.summary) + '</div>' +
+          detail +
+        '</div>' +
+      '</div>';
+    return li;
+  }
+  function setBadge(isRunning, evCount) {
+    if (!status) return;
+    if (isRunning) {
+      status.textContent = 'running';
+      status.style.color = 'var(--accent)';
+      status.style.background = 'var(--accent-tint)';
+    } else if (evCount > 0) {
+      status.textContent = 'last run';
+      status.style.color = 'var(--muted)';
+      status.style.background = 'rgba(15,22,38,0.6)';
+    } else {
+      status.textContent = 'idle';
+      status.style.color = 'var(--faint)';
+      status.style.background = 'rgba(15,22,38,0.6)';
+    }
+  }
+  function setStatusWidget(state, fullStatus) {
+    if (!swLabel) return;
+    // state in {idle, running, done, failed}
+    var palette = {
+      idle:    { dot: '#64748b', label: 'Idle',    text: 'var(--muted)',  bg: 'rgba(15,22,38,0.6)' },
+      running: { dot: '#38bdf8', label: 'Running', text: 'var(--accent)', bg: 'var(--accent-tint)' },
+      done:    { dot: '#34d399', label: 'Done',    text: '#34d399',       bg: 'rgba(52,211,153,0.12)' },
+      failed:  { dot: '#fb7185', label: 'Failed',  text: '#fb7185',       bg: 'rgba(251,113,133,0.12)' }
+    };
+    var p = palette[state] || palette.idle;
+    if (swDot) swDot.style.background = p.dot;
+    swLabel.textContent = p.label;
+    swLabel.style.color = p.text;
+    if (fullStatus) {
+      if (swTarget) swTarget.textContent = fullStatus.target_product ? "Target: " + fullStatus.target_product : 'No run yet';
+      if (swMessage) swMessage.textContent = fullStatus.message || (state === 'running' ? (fullStatus.stage_label || 'Working…') : (state === 'idle' ? 'Run the pipeline above to start the agents.' : ''));
+      if (swNew && typeof fullStatus.leads_found === 'number') swNew.textContent = fullStatus.leads_found;
+      if (swKnown && typeof fullStatus.leads_known === 'number') swKnown.textContent = fullStatus.leads_known;
+      if (swExcluded && typeof fullStatus.leads_excluded === 'number') swExcluded.textContent = fullStatus.leads_excluded;
+    }
+    // Lock / unlock the submit button + show the "already running" notice.
+    if (state === 'running') {
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.classList.add('opacity-60'); }
+      if (swLocked) swLocked.classList.remove('hidden'), swLocked.classList.add('flex');
+    } else {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.classList.remove('opacity-60'); }
+      if (swLocked) swLocked.classList.add('hidden'), swLocked.classList.remove('flex');
+    }
+  }
+  function update() {
+    fetch('/api/job/events?since=' + since, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.events && data.events.length) {
+          if (empty && !empty.hidden) empty.hidden = true;
+          for (var i = data.events.length - 1; i >= 0; i--) {
+            list.prepend(renderEvent(data.events[i]));
+          }
+          since = data.total;
+          while (list.children.length > 80) {
+            list.removeChild(list.lastElementChild);
+          }
+        }
+        if (data && typeof data.total === 'number') total = data.total;
+        if (counter) counter.textContent = total + (total === 1 ? ' event' : ' events');
+        if (clearBtn) clearBtn.hidden = (total === 0);
+        setBadge(!!(data && data.running), total);
+        // Determine the state for the big status widget.
+        var running = !!(data && data.running);
+        // Use the /api/job/status (lightweight) to pull the latest
+        // leads_known/leads_excluded/target_product. We piggyback on the
+        // existing events payload (which already has running + stage) for
+        // the rest.
+        var state = running ? 'running' : lastStatus;
+        // If this is the first poll, treat as idle. If we just stopped,
+        // mark done. If the server reports an error, mark failed.
+        if (!running) {
+          // We can't read fullStatus here (events endpoint doesn't
+          // include leads_known etc.). Fetch /api/job/status for the
+          // canonical state when not running.
+          if (state !== 'failed' && state !== 'done') {
+            fetch('/api/job/status', { cache: 'no-store' })
+              .then(function (r) { return r.json(); })
+              .then(function (s) {
+                var newState = s && s.error ? 'failed' : (s && (s.leads_found || s.message) ? 'done' : 'idle');
+                if (newState !== lastStatus || s.target_product) {
+                  lastStatus = newState;
+                  setStatusWidget(newState, s);
+                }
+              });
+          }
+        } else {
+          lastStatus = 'running';
+          setStatusWidget('running', {
+            target_product: data.target_product || null,
+            leads_found: data.leads_found,
+            leads_known: data.leads_known,
+            leads_excluded: data.leads_excluded,
+            message: data.message,
+            stage_label: data.stage_label
+          });
+        }
+      })
+      .catch(function () { /* server restarting */ });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function () {
+      fetch('/api/job/ack', { method: 'POST' })
+        .then(function () { location.reload(); });
+    });
+  }
+  window.ConftechUI = window.ConftechUI || {};
+  window.ConftechUI.refreshActivity = function () { since = 0; update(); };
+  // Prime the status widget from /api/job/status so the dashboard shows
+  // the most recent run's numbers on first load.
+  fetch('/api/job/status', { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      if (!s) return;
+      var state = s.running ? 'running' : (s.error ? 'failed' : ((s.leads_found || s.message) ? 'done' : 'idle'));
+      lastStatus = state;
+      setStatusWidget(state, s);
+    });
+  update();
+  setInterval(update, 1500);
+})();
+</script>
 
 {% endblock %}
