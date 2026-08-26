@@ -424,47 +424,38 @@ def _run_pipeline_bg(target_product: str, limit: int, buyer_persona: str = "") -
             _record_incident("scoring", "scorer", exc)
             raise
 
-        # Honest "no real buyers" check: if every inserted lead was scored
-        # as a poor fit (<=30) the prospector returned low-quality
-        # matches (typical: TheirStack's free-tier tech search surfaced
-        # competitors / saturated companies that the legacy-stack exemption
-        # let through). Surface this to the user instead of leaving them
-        # staring at a queue of fit=0 leads.
+        # Qualified leads check: only companies with verified buying signals / pain
+        # points (fit >= 60 and status == pending_review) are counted as qualified leads.
         if new_leads:
             try:
-                rescored = db.get_client().table("leads").select("id, fit_score").in_("id", [l["id"] for l in new_leads]).execute()
-                good = [r for r in (rescored.data or []) if (r.get("fit_score") or 0) > 30]
+                rescored = db.get_client().table("leads").select("id, status, fit_score").in_("id", [l["id"] for l in new_leads]).execute()
+                qualified = [r for r in (rescored.data or []) if r.get("status") == db.PENDING_REVIEW and (r.get("fit_score") or 0) >= 60]
             except Exception:
-                good = []
-            if not good and len(new_leads) > 0:
-                from prospector import NoBuyersFoundError
+                qualified = []
+            _JOB_STATE["leads_found"] = len(qualified)
+
+            if not qualified and len(new_leads) > 0:
                 msg = (
-                    f"Prospector inserted {len(new_leads)} candidate(s) for "
-                    f"'{target_product}', but the scorer flagged every one "
-                    f"as a poor fit (fit<=30). The upstream search "
-                    f"(TheirStack / Serper) likely surfaced competitors or "
-                    f"saturated companies instead of buyers. Try a "
-                    f"different target product, broaden the buyer persona, "
-                    f"or increase the limit to get a wider search."
+                    f"Prospector analyzed {len(new_leads)} candidate(s) for '{target_product}', "
+                    f"but none met the qualification threshold (no credible buying signals or pain points found). "
+                    f"All {len(new_leads)} candidates were marked as rejected/unqualified rather than filling the queue with weak leads."
                 )
                 _record_event(
-                    agent="prospector",
-                    kind="no_buyers",
-                    summary="No real buyers found — every inserted lead scored fit<=30",
-                    detail={"new_lead_count": len(new_leads), "good_fit_count": len(good), "target_product": target_product},
+                    agent="scorer",
+                    kind="no_qualified_leads",
+                    summary="No qualified leads found — candidates lacked verified buying signals or pain points",
+                    detail={"new_candidates": len(new_leads), "qualified_count": 0, "target_product": target_product},
                 )
-                # Mark all of them as rejected so they don't sit in pending_review
-                # forever confusing the next reviewer.
-                try:
-                    for l in new_leads:
-                        db.update_lead(l["id"], status=db.REJECTED, reasoning=(l.get("reasoning") or "") + "\n\n[rejected: no_buyers] no real buyer for this target — see job banner.")
-                except Exception:
-                    pass
-                _JOB_STATE["leads_found"] = 0
-                _job_update("scoring", "Scoring fit", message=msg)
+                _job_update("scoring", "Completed", message=msg)
                 _job_finish(error=msg)
-                print(f"[web] no buyers: {msg}")
+                print(f"[web] no qualified leads: {msg}")
                 return
+            else:
+                _job_update(
+                    "scoring",
+                    "Completed",
+                    message=f"Pipeline complete: {len(qualified)} qualified lead(s) surfaced for '{target_product}' ({len(new_leads) - len(qualified)} unqualified/rejected).",
+                )
 
         _job_finish()
         print(f"[web] pipeline done: {db.count_by_status()}")
@@ -736,10 +727,23 @@ def build_app() -> FastAPI:
             "finished_at": _JOB_STATE.get("finished_at"),
         }
 
+    @app.post("/api/job/events/clear")
+    def api_job_events_clear():
+        """Clear the in-memory activity event stream and reset event counts."""
+        _JOB_STATE["events"] = []
+        _JOB_STATE["incidents"] = []
+        _JOB_STATE["last_error_kind"] = None
+        _JOB_STATE["last_error_hint"] = None
+        _JOB_STATE["acknowledged"] = True
+        return {"cleared": True, "total": 0}
+
     @app.post("/api/job/ack")
     def api_job_ack():
         """Mark the current error banner as acknowledged so it stops showing."""
         _JOB_STATE["acknowledged"] = True
+        _JOB_STATE["error"] = None
+        _JOB_STATE["last_error_kind"] = None
+        _JOB_STATE["last_error_hint"] = None
         return {"acknowledged": True}
 
     @app.get("/api/leads/{lead_id}")

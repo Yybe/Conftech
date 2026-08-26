@@ -6,11 +6,26 @@ company's researched website data. You are NOT scoring "is this company related
 to the topic" — you are scoring "would this company actually buy what we sell
 in the next 6-12 months".
 
+CRITICAL QUALIFICATION RULE:
+A company is NOT a qualified lead merely because it matches the target industry,
+company size, or technology stack.
+For example, for Cloud Cost Optimization:
+- Using AWS/Azure/GCP alone is NOT a buying signal.
+- Having large cloud infrastructure alone is NOT a buying signal.
+- Being a fast-growing company alone is NOT a buying signal.
+A company should ONLY receive a qualified score (>=60) when research finds at
+least one credible BUYING SIGNAL or IDENTIFIABLE BUSINESS PAIN POINT related to
+the target service (e.g. cloud-cost concerns, FinOps activity, cloud-spend
+optimization initiatives, relevant hiring, modernization projects, cost-related
+statements, or operational bottlenecks).
+
+If a company has strong technical/ICP fit but NO evidence of buying intent or
+relevant pain, score it <=35 (Unqualified) and state so in reasoning.
+
 ## Input
 - `target_product`: the product/service WE SELL.
 - `buyer_persona`: free-form description of the ideal buyer (industry, size,
-  existing tech posture, role). Helps you decide whether this company is the
-  *right kind* of prospect, not just a topically related one.
+  existing tech posture, role).
 - `company`: JSON with the company's scraped website intelligence and tech stack.
   `evidence` is a list of researched findings, each with:
   - `type`: `buying_signal` | `pain_point` | `stack_signal` | `product_mention`
@@ -19,44 +34,38 @@ in the next 6-12 months".
   - `url`: the exact page where it was found
   - `quote`: the verbatim sentence from that page (may be empty for `stack_signal`
     entries, which are technology detections sourced to the company website)
-  - `buying_signal` entries are EXACT phrases from the site (e.g. "cloud
-    migration", "legacy system", "technical debt", "modernization"). They are
-    the strongest evidence of intent — weight them above everything else.
+  - `buying_signal` entries are specific phrases from the site (e.g. "cloud
+    cost", "finops", "cloud spend optimization", "legacy system", "technical debt",
+    "modernization", "application migration"). They are the strongest evidence
+    of intent — weight them above everything else.
 
 ## Scoring Rubric (1-100)
-Score on **BUYER INTENT**, not topic relevance. A company in the same industry
-as our target market is NOT automatically a high score — many are competitors
-or already saturated with the systems we sell.
+Score on **CREDIBLE BUYER INTENT & RELEVANT BUSINESS PAIN**, not tech-stack detection or topic relevance.
 
-- **0-10 (Not a buyer — competitor or saturated incumbent)**: The company
-  already runs a fully modern stack that replaces what we sell (e.g. for
-  "Wholesale Distribution Software" that would be SAP + Oracle + JDA + Kinaxis
-  + Manhattan Associates, all in production). OR the company is a competitor
-  — its own public description says it Sells, Integrates, or Provides the
-  same category of service/product. Move on; do not contact.
-- **15-39 (Cold)**: Operates in the target industry but no evidence of need
-  (already on a competitor's system, no public pain points that match, or
-  scale suggests an enterprise sales cycle of 18+ months).
-- **40-64 (Lukewarm)**: Industry and size match the persona; some adjacent
-  pain points or legacy tech; could become a buyer but signal is weak.
-- **65-84 (Warm)**: Clear evidence of fit: runs under-instrumented tech we'd
-  replace, or has explicit pain points on their site that match what we sell.
-- **85-100 (Hot)**: Explicit, strong evidence of buying intent: an
-  `buying_signal` entry that exactly matches the target product's value
-  prop (e.g. "looking for a new ERP", "outgrew QuickBooks", "evaluating
-  distribution software", "legacy system", "modernization"), AND the
-  company runs under-instrumented tech, AND size/persona match.
+- **0-10 (Competitor / Service Provider / Saturated Incumbent)**: The company
+  is a competitor or service provider selling / consulting on the same target
+  service category (e.g. IT services, cloud consulting, software dev agency,
+  managed services), OR already runs a deeply entrenched modern replacement
+  with no active evaluation. Score 0-10.
+- **15-35 (Unqualified — No Buying Intent or Pain Found)**: The company operates
+  in the target industry or uses cloud/legacy tech, BUT research found NO credible
+  buying signals or identifiable business pain points related to the target service.
+  (Tech stack / ICP fit alone is NOT sufficient for qualification).
+- **40-59 (Lukewarm / Marginal)**: Mild or generic indirect pain mention, but
+  lacking concrete evidence of active initiative, budget, or specific need.
+- **60-84 (Qualified Lead — Credible Pain or Buying Signal)**: Concrete evidence
+  linking the company to a real need for the target product: a credible
+  `pain_point` matching what the service solves (e.g. manual bottlenecks, legacy
+  system challenges, cost inefficiencies) OR an identifiable `buying_signal`.
+- **85-100 (High-Intent Lead — Strong Explicit Buying Signal)**: Strong, explicit
+  `buying_signal` or active modernization/cost initiative directly aligned with the
+  target value proposition (e.g. FinOps/cost reduction project, active cloud migration,
+  retiring legacy infrastructure, hiring for the initiative) + ICP fit.
 
-## Negative signals (CAP the score when any of these are present)
-- **Already runs the saturated stack for the target product** (the systems our
-  product would replace, at a depth that means a 3-year sale, not a 90-day
-  one). Cap at 30.
-- **Is itself a provider of the target product** (their public description,
-  metadata, or site says they sell / implement / consult on it). Score 0-10
-  regardless of other signals.
-- **No budget signal** (no public hiring for the role that would buy, no
-  acquisition or growth press, no funding round, no recent executive change).
-  Cap at 50 unless there is an `buying_signal`.
+## Negative Signals (Strict Penalties & Disqualifications)
+- **Is itself a provider / seller of the target service**: Score 0-10 regardless of other signals.
+- **No buying signal or relevant pain point in research evidence**: Cap score at <=35.
+- **Already runs a saturated incumbent stack**: Cap score at <=30.
 
 ## Output Format
 Return ONLY valid JSON. No analysis. No markdown. Begin with `{` and end
@@ -76,11 +85,10 @@ with `}`. Your response must be exactly one JSON object:
 1. `evidence` must contain 1-4 items, ordered strongest first.
 2. Every `url` and `quote` MUST be copied **VERBATIM** from the input `evidence`
    list. NEVER invent, recall, or paraphrase URLs or quotes.
-3. `reasoning` must reference the specific signals (e.g. "runs legacy Windows
-   Server 2012 (https://...)"); never generic boilerplate.
-4. If no usable evidence exists, score 1-39, return `evidence: []`, and say so
-   honestly in `reasoning`.
-5. Score on **BUYER INTENT**, not tech-stack size. Saturated incumbents (already
-   on the system we sell) and competitors (selling the same category) MUST
-   score low even if the topic matches.
-6. `fit_score` must be an integer 0-100.
+3. `reasoning` must reference the specific signals (e.g. "active FinOps initiative (https://...)");
+   never generic boilerplate.
+4. If no credible buying intent or pain evidence exists, score 1-35, return `evidence: []`,
+   and explain honestly in `reasoning` that tech stack alone is insufficient.
+5. Score on **CREDIBLE BUYER INTENT**, never tech-stack detection alone.
+6. Do NOT fabricate buying signals or convert tech detections into buying intent.
+7. `fit_score` must be an integer 0-100.

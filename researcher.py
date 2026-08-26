@@ -52,7 +52,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 )
-CONTACT_PATHS = ("/contact", "/contact-us", "/about", "/about-us")
+CONTACT_PATHS = ("/contact", "/contact-us", "/about", "/about-us", "/careers", "/jobs", "/news", "/blog", "/press")
 MAX_PAGE_TEXT = 6000
 MAX_CRAWL_PAGES = 8
 
@@ -71,25 +71,43 @@ _FUNCTIONAL_KEYS = (
 # Explicit buying signals - much stronger than generic tech mentions. Detected
 # deterministically in page text and scored as the top-weight signal.
 BUYING_SIGNAL_PHRASES = (
+    # FinOps & Cloud Cost Optimization
+    "cloud cost", "cloud costs", "cloud spend", "cloud spending", "finops",
+    "aws spend", "azure spend", "cloud bill", "cloud budget",
+    "cost optimization", "reduce cloud", "infrastructure cost", "compute cost",
+    "cut cloud cost", "manage cloud spend", "cloud waste", "overprovisioned",
+    # Modernization & Migration Initiatives
     "legacy system", "legacy systems", "legacy infrastructure",
-    "application migration", "app migration",
-    "cloud migration", "cloud transformation",
-    "digital transformation", "digitalization", "digitisation",
-    "technical debt",
-    "modernization", "modernisation", "modernise", "modernize",
-    "lift and shift", "lift & shift",
-    "end of life", "end-of-life",
-    "upgrade infrastructure", "infrastructure upgrade",
-    "migration services", "cloud migration services",
-    "hybrid cloud",
+    "application migration", "app migration", "migrating to cloud",
+    "cloud migration initiative", "cloud transformation", "digital transformation",
+    "technical debt", "modernization", "modernisation", "modernise", "modernize",
+    "lift and shift", "lift & shift", "end of life", "end-of-life",
+    "upgrade infrastructure", "infrastructure upgrade", "decommissioning legacy",
+    "retiring legacy", "replacing legacy", "migrating from on-prem",
+    # DevOps / Reliability / Scaling Bottlenecks
+    "deployment bottleneck", "slow deployment", "manual deployment",
+    "scaling bottleneck", "ci/cd modernization", "delivery speed",
+    "infrastructure scaling", "outgrowing infrastructure",
+    # Tool Evaluation & Replacement Needs
+    "evaluating new solutions", "evaluating erp", "outgrown quickbooks",
+    "outgrown current system", "manual workflows", "manual processes",
+)
+# Phrases indicating vendor/marketing copy (selling the service to others, not buying it).
+_VENDOR_OFFERING_PHRASES = (
+    "we provide", "we offer", "our services", "our service", "our solutions",
+    "our solution", "our offerings", "our clients", "our customers",
+    "we help clients", "we help companies", "we help businesses",
+    "leading provider", "leading supplier", "trusted by", "contact our team",
+    "schedule a demo", "partner with us", "our consulting",
 )
 # Phrase -> shorter label used when the matched sentence is too long.
 _BUYING_SIGNAL_LABELS = {p: p for p in BUYING_SIGNAL_PHRASES}
 
 _PRIORITY_KEYWORDS = (
     "about", "service", "solution", "platform", "product", "technology",
-    "customer", "case", "client", "career", "news", "partner", "pricing",
-    "why", "contact", "support", "help", "resource",
+    "customer", "case", "client", "career", "careers", "job", "jobs",
+    "news", "press", "blog", "partner", "pricing", "why", "contact",
+    "support", "help", "resource", "engineering", "tech",
 )
 _SKIP_KEYWORDS = (
     "login", "signin", "signup", "register", "privacy", "terms", "legal",
@@ -205,6 +223,8 @@ def _scan_buying_signals(pages: list[dict[str, str]]) -> list[dict[str, Any]]:
 
     Every match is stored as evidence: text/quote are the verbatim sentence
     from the page, url + page_title identify the source - nothing fabricated.
+    Sentences containing vendor marketing phrases ("we provide", "our services")
+    are skipped so provider sales copy is not mistaken for buyer intent.
     """
     found: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -219,6 +239,9 @@ def _scan_buying_signals(pages: list[dict[str, str]]) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             sentence = _sentence_with(raw, phrase)
+            sent_low = sentence.lower()
+            if any(vp in sent_low for vp in _VENDOR_OFFERING_PHRASES):
+                continue
             if sentence and len(sentence) > 260:
                 sentence = sentence[:257].rsplit(" ", 1)[0] + "…"
             found.append(

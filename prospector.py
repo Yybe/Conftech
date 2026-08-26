@@ -253,40 +253,17 @@ def classify_company(co: dict) -> dict:
     if emp_num is not None and emp_num >= ENTERPRISE_EMPLOYEE_MIN:
         return done("exclude", "large_enterprise", [f"{emp_block} employees"])
 
-    # 4) Service providers (IT/consulting/cloud/migration/MSP...) sell what we
-    #    sell - they are competitors, not buyers. Exclude decisively.
-    #    Check both free-text metadata and the industry-taxonomy name.
-    #    EXCEPTION: when the company has strong buyer-tech signals (legacy
-    #    monolith stack, on-prem database) it is a REAL software-org buyer
-    #    even if its industry is "software development" - lots of mid-market
-    #    companies self-classify that way when they have an in-house IT
-    #    team. We require AT LEAST 3 buyer-tech hints to override.
+    # 4) Service providers (IT/consulting/cloud/migration/MSP/software agency...)
+    #    sell what we sell - they are competitors/providers, not buyers.
+    #    Exclude decisively across free-text metadata and industry taxonomy.
     blob_hit = next((p for p in _SERVICE_PROVIDER_PHRASES if p in blob), None)
     ind_hit = next(
         (p for p in _PROVIDER_INDUSTRY_PHRASES if p in str(co.get("industry") or "").lower()),
         None,
     )
     if blob_hit or ind_hit:
-        # Check for legacy-stack buyer signals in their tech_stack / long
-        # description - these prove they are a real buyer even if their
-        # public profile mentions "it services" or "software development".
-        # We require AT LEAST 2 distinct hints because the free-tier
-        # TheirStack data is noisy and a single hit is often spurious.
-        legacy_buyer_hints = (
-            "oracle-database", "sap", "microsoft-sql-server", "vmware-vsphere",
-            "weblogic", "websphere", "jboss", "tomcat", "iis",
-            "windows-server", "mainframe", "as400", "ibm-i",
-            "jenkins", "subversion", "perforce", "bamboo-ci",
-            "tfs", "team-foundation-server",
-        )
-        tech_blob = " ".join(str(t) for t in (co.get("technology_names") or co.get("technologies_found") or [])).lower()
-        tech_blob += " " + (str(co.get("long_description") or "") + " " + str(co.get("seo_description") or "") + " " + str(co.get("industry") or "")).lower()
-        buyer_hits = sum(1 for h in legacy_buyer_hints if h in tech_blob)
-        if buyer_hits < 2:
-            hit, source = (ind_hit, "industry") if ind_hit else (blob_hit, "public metadata")
-            return done("exclude", "service_provider", [f"service-provider signal {hit!r} in {source}"])
-        # Otherwise: falls through to `keep` (we treat it as a real buyer
-        # because the legacy stack is decisive).
+        hit, source = (ind_hit, "industry") if ind_hit else (blob_hit, "public metadata")
+        return done("exclude", "service_provider", [f"service-provider signal {hit!r} in {source}"])
 
     # 5) Publicly traded listings -> large-company territory; penalize, keep if useful.
     if traded_symbol:
@@ -377,27 +354,48 @@ def search_theirstack(payload: dict) -> dict:
     )
 
 
-# --- Web search fallback discovery (zero-auth DuckDuckGo + Serper) -----------
+# --- Fallback: Web search discovery (Zero-auth DuckDuckGo + Serper) ----------
+# Extracts LinkedIn company pages for BUYER-indicator queries, then resolves
+# each company's real website domain so research/score can crawl and evaluate.
 
-#
-# Google SERP cannot match structured tech stacks the way TheirStack does, so
-# this is a lower-precision path: it extracts LinkedIn company pages for
-# BUYER-indicator queries (industry + "family owned"/"founded in", never the
-# service topic itself, which only surfaces providers), then resolves each
-# company's real website domain so research/score can still crawl it. The
-# provider filter runs on whatever metadata we got (name, domain, snippet).
+def _web_discover(target_product: str, limit: int, buyer_persona: str = "") -> list[dict[str, Any]]:
+    """Discovery web search using DuckDuckGo / Serper. Returns company dicts
+    built from search results targeting real buyers of target_product."""
+    low_target = (target_product or "").lower()
+    low_persona = (buyer_persona or "").lower()
 
-def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
-    """Discovery-only fallback. Returns TheirStack-shaped company dicts
-    (name/domain/linkedin_url/long_description) built from SERP results."""
-    buyer_indicators = ["family owned", "founded in", "employee owned", "established in"]
-    industries = ["manufacturing", "logistics", "distribution", "wholesale",
-                  "retail", "food and beverage", "healthcare", "pharmaceuticals"]
     queries: list[str] = []
-    for ind in industries:
-        for hint in buyer_indicators:
-            queries.append(f'site:linkedin.com/company {ind} "{hint}" -staffing -recruiting -consulting')
-    # Cap discovery work: 6 queries x 10 results is plenty for limit leads.
+
+    # Target-aware search queries focusing on real buyers, not consulting agencies
+    if any(k in low_target for k in ("cost", "finops", "spend", "budget", "license", "optim")):
+        queries.extend([
+            'site:linkedin.com/company "AWS" OR "cloud" ("ecommerce" OR "fintech" OR "saas" OR "retail" OR "health" OR "logistics") -consulting -agency -recruiting',
+            'site:linkedin.com/company "cloud infrastructure" ("cost optimization" OR "FinOps" OR "reduce cloud") -consulting -agency',
+            'site:linkedin.com/company "AWS" "growing team" -consulting -agency',
+        ])
+    elif any(k in low_target for k in ("migration", "moderniz", "lift and shift", "legacy")):
+        queries.extend([
+            'site:linkedin.com/company "cloud migration" ("manufacturing" OR "logistics" OR "retail" OR "financial" OR "health") -consulting -agency',
+            'site:linkedin.com/company "legacy infrastructure" OR "legacy systems" -consulting -agency',
+            'site:linkedin.com/company "migrating to AWS" OR "migrating to cloud" -consulting -agency',
+            'site:linkedin.com/company "digital transformation" ("family owned" OR "manufacturing" OR "distribution") -consulting -agency',
+        ])
+    elif any(k in low_target for k in ("devops", "ci/cd", "ci-cd", "kubernetes", "sre", "platform")):
+        queries.extend([
+            'site:linkedin.com/company "software engineers" ("manufacturing" OR "retail" OR "fintech" OR "health" OR "logistics") -consulting -agency',
+            'site:linkedin.com/company "CI/CD" OR "Jenkins" ("ecommerce" OR "retail" OR "logistics") -consulting -agency',
+        ])
+    else:
+        queries.extend([
+            f'site:linkedin.com/company "{target_product}" buyer -consulting -agency -recruiting',
+            'site:linkedin.com/company "manufacturing" OR "logistics" OR "retail" -consulting -agency',
+        ])
+
+    if buyer_persona:
+        clean_p = " ".join(w for w in re.findall(r"[a-z0-9]+", low_persona) if len(w) > 3)[:60]
+        if clean_p:
+            queries.insert(0, f'site:linkedin.com/company {clean_p} -consulting -agency')
+
     queries = queries[:6]
 
     seen_slugs: set[str] = set()
@@ -408,7 +406,7 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
         try:
             sr = serper_search(q)
         except Exception as exc:
-            print(f"[prospector] Serper discovery query failed ({q}): {exc}")
+            print(f"[prospector] Web discovery query failed ({q}): {exc}")
             continue
         for item in sr.get("organic", []) or []:
             link = str(item.get("link") or "")
@@ -428,9 +426,7 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
                 "seo_description": str(item.get("snippet") or ""),
             })
 
-    # Resolve each company's real website domain (skip social/blog/directory
-    # sites, and reject domains that don't correlate with the company name -
-    # e.g. a Zoominfo/Crunchbase page is NOT the company's own website).
+    # Resolve each company's real website domain
     resolved: list[dict[str, Any]] = []
     for co in companies:
         name = co.get("name") or ""
@@ -439,16 +435,9 @@ def _serper_discover(target_product: str, limit: int) -> list[dict[str, Any]]:
             print(f"[prospector] Web search could not resolve domain for {name}; skipping")
             continue
 
-        # Reject a resolved domain that has zero textual overlap with the
-        # company name - it's almost certainly a directory/aggregator page
-        # (e.g. "Pillar Manufacturing" resolving to zoominfo.com). Family
-        # names like "Smith & Sons" legitimately diverge, so this is a soft
-        # check: keep if EITHER a name token appears in the domain OR the
-        # domain host itself contains a word from the name.
         name_words = set(re.findall(r"[a-z0-9]{3,}", name.lower()))
         host_base = domain.split(".")[0]
         overlap = name_words & {host_base} or any(w in host_base for w in name_words)
-        # Substring fallback: "bemismfg.com" vs "Bemis Manufacturing".
         substring_match = any(w and w[:5] in host_base for w in name_words if len(w) >= 5)
         if not (overlap or substring_match):
             print(
@@ -988,27 +977,23 @@ def prospect(
         )
         print(f"[prospector] NEW {name} ({website}) status=raw emails={sorted(emails)}")
 
-    # 1b) Free fallback when TheirStack's tech search was too noisy to
-    #     produce any buyers (its free tier often returns IT services
-    #     companies for buyer-tech filters). Serper-based discovery searches
-    #     LinkedIn for buyer-indicator queries and resolves each company's
-    #     real website domain. We only run it when TheirStack's results
-    #     were entirely filtered out, and we re-run the classifier +
-    #     insert loop over the new companies so they get the same dedupe
-    #     / scoring / quality treatment.
+    # 1b) Zero-auth web search discovery (DuckDuckGo + Serper).
+    #     Runs when TheirStack returns 0 companies (e.g. no API key or no results).
+    #     Searches LinkedIn for buyer-indicator queries and resolves each company's
+    #     real website domain for deep research and scoring.
     if not new_leads and not known_leads:
         from webapp import _record_event
         _record_event(
             agent="prospector",
-            kind="serper_fallback",
-            summary="TheirStack returned nothing usable; falling back to Serper/DuckDuckGo discovery",
-            detail={"reason": "no_companies_or_all_filtered"},
+            kind="web_discovery",
+            summary="TheirStack returned 0 companies; running zero-auth Web Discovery (DuckDuckGo)",
+            detail={"reason": "no_theirstack_results"},
         )
         try:
-            extra = _serper_discover(target_product, limit)
-            print(f"[prospector] Serper fallback returned {len(extra)} companies")
+            extra = _web_discover(target_product, limit, buyer_persona)
+            print(f"[prospector] Web discovery returned {len(extra)} companies")
         except Exception as exc:
-            print(f"[prospector] Serper fallback failed ({exc}); nothing to add.")
+            print(f"[prospector] Web discovery failed ({exc}); nothing to add.")
             extra = []
         for co in extra:
             cls = classify_company(co)
@@ -1018,7 +1003,7 @@ def prospect(
                 _record_event(
                     agent="prospector",
                     kind="exclude",
-                    summary=f"Excluded {name} ({domain}) (Serper fallback)",
+                    summary=f"Excluded {name} ({domain}) [Web Discovery]",
                     detail={"company": name, "domain": domain, "reasons": cls["reasons"]},
                 )
                 continue
@@ -1032,7 +1017,7 @@ def prospect(
                 _record_event(
                     agent="prospector",
                     kind="duplicate",
-                    summary=f"DUPLICATE {name} (Serper fallback) — already in DB",
+                    summary=f"DUPLICATE {name} [Web Discovery] — already in DB",
                     detail={"company": name, "website": website, "existing_status": existing.get("status")},
                 )
                 continue
@@ -1051,7 +1036,7 @@ def prospect(
                 company_name=name,
                 website=website,
                 tech_stack=list(tech_stack) if isinstance(tech_stack, list) else [],
-                source="serper",
+                source="web_search",
                 target_product=target_product,
                 contact_email=sorted(emails)[0] if emails else None,
                 company_profile=cls["profile"],
@@ -1062,7 +1047,7 @@ def prospect(
             _record_event(
                 agent="prospector",
                 kind="lead_created",
-                summary=f"NEW {name} ({website}) (Serper fallback)" + (f" [BP]" if matches_p else (f" [broader search — no persona match]" if buyer_persona else "")),
+                summary=f"NEW {name} ({website}) [Web Discovery]" + (f" [BP]" if matches_p else (f" [broader search — no persona match]" if buyer_persona else "")),
                 detail={"company": name, "website": website, "emails": sorted(emails), "lead_id": lead.get("id"), "matches_persona": matches_p, "persona": buyer_persona},
             )
 

@@ -358,35 +358,39 @@ def _saturated_penalty(lead: dict[str, Any], target_product: str) -> int:
 
 
 def _competitor_penalty(lead: dict[str, Any], target_product: str) -> int:
-    """Return a strong negative number when the lead's public description
-    says it Sells / Provides the target product category (it's a competitor,
-    not a buyer)."""
+    """Return a strong negative number (-80) when the lead's public profile
+    or scraped content indicates it Sells / Provides the target product category
+    (it's a competitor or service provider, not a buyer)."""
     low_target = (target_product or "").lower()
-    # Only treat as a competitor when the target is a recognisable product
-    # category (software / service / platform). For a target like "Cloud
-    # Migration Services" the company description containing "cloud" is fine;
-    # for "Wholesale Distribution Software" the description containing
-    # "wholesale distribution" and "software" is the danger signal.
-    if not any(k in low_target for k in ("software", "service", "platform", "solution", "system", "saas")):
-        return 0
-
     profile = lead.get("company_profile") or {}
+    scraped = lead.get("scraped_data") or {}
+
     blob = " ".join(
         filter(None, [
             str(profile.get("seo_description") or ""),
             str(profile.get("long_description") or ""),
             str(profile.get("industry") or ""),
+            str(scraped.get("summary") or ""),
+            str(scraped.get("mission") or ""),
             " ".join(str(t) for t in (profile.get("company_tags") or [])),
             " ".join(str(k) for k in (profile.get("keywords") or [])),
         ])
     ).lower()
 
-    has_target_term = any(t in blob for t in low_target.split() if len(t) > 4)
-    if not has_target_term:
+    # Competitor industry terms (dev shops, IT consultancies, MSPs)
+    competitor_industries = (
+        "it services", "it consulting", "information technology & services",
+        "cloud consulting", "management consulting", "software development",
+        "custom software", "managed service", "outsourcing", "systems integrator",
+    )
+    is_provider_desc = any(p in blob for p in _COMPETITOR_PRODUCT_PHRASES) or any(ci in blob for ci in competitor_industries)
+    if not is_provider_desc:
         return 0
-    if any(p in blob for p in _COMPETITOR_PRODUCT_PHRASES):
-        return -80  # hard cap -> not a buyer
-    return -10  # light cap - they are at least in the same space
+
+    target_tokens = [w for w in re.findall(r"[a-z0-9]+", low_target) if len(w) > 3 and w not in _SCORER_STOPWORDS]
+    if any(tt in blob for tt in target_tokens):
+        return -80  # Sells the same service/product category
+    return -20  # General IT service provider, less likely to buy custom IT services
 
 
 _SCORER_STOPWORDS = {
@@ -421,9 +425,9 @@ def _rule_based_score(
 ) -> dict[str, Any]:
     """Deterministic evidence-based scoring (used when the LLM is down).
 
-    Every citation comes from the researched evidence list (real URLs/quotes).
-    Calibration: explicit buying signals are the strongest migration signals,
-    then legacy + cloud stack signals, then keyword-matched pain points.
+    Enforces strict qualification rule: tech stack alone (e.g. AWS, VMware)
+    is NOT buying intent. A lead ONLY qualifies if there is at least one
+    verified buying signal or relevant business pain point in the research evidence.
     """
     evidence = _pick_evidence(scraped)
     tkw = _sig_words(target_product)
@@ -451,26 +455,31 @@ def _rule_based_score(
                 sum_hits += 1
 
     n_legacy, n_cloud, n_bs = len(legacy), len(cloud), min(buying_hits, 3)
-    # Explicit buying signals dominate: they guarantee conversation-relevance.
+
+    # STRICT RULE: Without buying signals or pain points, the lead is UNQUALIFIED (fit <= 30).
+    if n_bs == 0 and pain_hits == 0:
+        fit = min(30, 15 + min(n_legacy + n_cloud, 4) * 3)
+        reasoning = (
+            f"No credible buying signals or business pain points related to '{target_product}' "
+            "found in researched evidence. Tech stack presence alone does not indicate buying intent."
+        )
+        return {"fit_score": int(fit), "reasoning": reasoning, "evidence": []}
+
+    # Qualified scoring with verified signals:
     if n_bs >= 2:
-        base = 55
+        base = 75
     elif n_bs == 1:
-        base = 40
-    elif n_legacy >= 2 and n_cloud >= 2:
-        base = 50
-    elif n_legacy >= 2 and n_cloud >= 1:
-        base = 45
-    elif n_legacy >= 1 or n_cloud >= 2:
-        base = 35
-    else:
-        base = 15
+        base = 65
+    else:  # pain_hits >= 1
+        base = 60
+
     fit = min(
         100,
         base
-        + 7 * n_bs
-        + 3 * min(n_legacy, 6)
-        + 2 * min(n_cloud, 6)
-        + 4 * min(pain_hits, 3)
+        + 8 * n_bs
+        + 5 * min(pain_hits, 3)
+        + 2 * min(n_legacy, 4)
+        + 2 * min(n_cloud, 4)
         + 2 * min(sum_hits, 2),
     )
 
@@ -480,15 +489,15 @@ def _rule_based_score(
         etype = e.get("type")
         pts = 0
         if etype == "buying_signal":
-            pts = 7
-        elif etype == "stack_signal":
-            if any(k in t for k in _LEGACY_STACK_HINTS):
-                pts = 3
-            elif any(k in t for k in _CLOUD_STACK_HINTS):
-                pts = 2
-        elif etype in ("pain_point", "product_mention", "summary"):
+            pts = 10
+        elif etype == "pain_point":
             if _kw_overlap(_sig_words(e.get("text")), tkw):
-                pts = 4 if etype != "summary" else 2
+                pts = 6
+        elif etype in ("product_mention", "summary"):
+            if _kw_overlap(_sig_words(e.get("text")), tkw):
+                pts = 3
+        elif etype == "stack_signal":
+            pts = 1
         if pts:
             scored.append((pts, e))
     scored.sort(key=lambda x: -x[0])
@@ -503,11 +512,8 @@ def _rule_based_score(
         }
         for _pts, e in scored[:MAX_EVIDENCE_OUTPUT]
     ]
-    if citations:
-        reasons = "; ".join(f"{e['text']} ({e['url']})" for _pts, e in scored[:3])
-        reasoning = f"Evidence match for '{target_product}': {reasons}."
-    else:
-        reasoning = f"No researched evidence links this company to '{target_product}'."
+    reasons = "; ".join(f"{e['text']} ({e['url']})" for _pts, e in scored[:3])
+    reasoning = f"Evidence match for '{target_product}': {reasons}."
 
     return {"fit_score": int(fit), "reasoning": reasoning, "evidence": citations}
 
@@ -625,8 +631,6 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
             "sells the same product category"
         )
     if sat_pen or comp_pen:
-        # Apply with a cap so a deeply-saturated competitor can't be raised
-        # above the rubric's hard cap just because the LLM gave 70.
         pre_cap = fit_score
         fit_score = min(fit_score, 30) + sat_pen + comp_pen
         fit_score = max(0, fit_score)
@@ -658,6 +662,34 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
             lead_id=lead.get("id"),
         )
 
+    # Check for credible buying signals or pain points in the research findings.
+    has_buying_signal = any(
+        c.get("type") in ("buying_signal", "pain_point") for c in validated
+    ) or bool(scraped.get("buying_signals")) or bool(scraped.get("pain_points"))
+
+    # Strict qualification gate:
+    # A company is ONLY qualified when:
+    # 1. It is not a competitor (comp_pen == 0).
+    # 2. It has at least one credible buying signal or business pain point.
+    # 3. Fit score >= 60.
+    # Otherwise, it is marked as rejected / unqualified.
+    is_competitor = comp_pen <= -50
+    if is_competitor:
+        final_status = db.REJECTED
+        fit_score = min(fit_score, 10)
+        rejection_note = f"[rejected: competitor] Excluded because company provides or consults on {target_product}."
+        reasoning = f"{reasoning}\n\n{rejection_note}".strip() if reasoning else rejection_note
+    elif not has_buying_signal or fit_score < 60:
+        final_status = db.REJECTED
+        fit_score = min(fit_score, 35)
+        rejection_note = (
+            f"[rejected: unqualified] No credible buying signals or business pain points found for '{target_product}'. "
+            "Technology stack or company size alone does not qualify a lead."
+        )
+        reasoning = f"{reasoning}\n\n{rejection_note}".strip() if reasoning else rejection_note
+    else:
+        final_status = db.PENDING_REVIEW
+
     # Deterministic confidence + human-readable top reasons.
     confidence = compute_confidence(scraped, lead.get("tech_stack", []))
     top_reasons = build_top_reasons(validated)
@@ -675,13 +707,13 @@ def score_one(lead: dict[str, Any]) -> dict[str, Any]:
         confidence_score=confidence,
         reasoning=reasoning,
         scraped_data=scraped,
-        status=db.PENDING_REVIEW,
+        status=final_status,
     )
     _record_event(
         agent="scorer",
         kind="done",
-        summary=f"{lead.get('company_name')} -> fit={fit_score}, conf={confidence} (pending_review)" + (" [fallback]" if used_fallback else ""),
-        detail={"fit_score": fit_score, "confidence": confidence, "top_reasons": [r["reason"] for r in top_reasons[:4]], "used_fallback": used_fallback},
+        summary=f"{lead.get('company_name')} -> fit={fit_score}, conf={confidence} ({final_status})" + (" [fallback]" if used_fallback else ""),
+        detail={"fit_score": fit_score, "confidence": confidence, "top_reasons": [r["reason"] for r in top_reasons[:4]], "used_fallback": used_fallback, "status": final_status},
         lead_id=lead.get("id"),
     )
     return updated

@@ -192,8 +192,8 @@
       </div>
       <span class="text-xs" style="color:var(--border-strong)">|</span>
       <div class="min-w-0 flex-1">
-        <div id="status-target" class="truncate text-sm font-semibold" style="color:var(--text-strong)">No run yet</div>
-        <div id="status-message" class="truncate text-xs" style="color:var(--muted)">Run the pipeline above to start the agents.</div>
+        <div id="status-target" class="text-sm font-semibold" style="color:var(--text-strong)">No run yet</div>
+        <div id="status-message" class="text-xs break-words whitespace-normal mt-0.5 leading-relaxed" style="color:var(--muted)">Run the pipeline above to start the agents.</div>
       </div>
       <div class="flex items-center gap-3 text-xs" style="color:var(--muted)">
         <div class="flex items-center gap-1.5">
@@ -534,6 +534,18 @@
     fetch('/api/job/events?since=' + since, { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (!data) return;
+        // If server reset or cleared (new pipeline started or cleared by user):
+        if (typeof data.total === 'number' && data.total < since) {
+          since = 0;
+          if (list) {
+            list.innerHTML = '';
+            if (empty) {
+              empty.hidden = !(data.events && data.events.length);
+              list.appendChild(empty);
+            }
+          }
+        }
         if (data && data.events && data.events.length) {
           if (empty && !empty.hidden) empty.hidden = true;
           for (var i = data.events.length - 1; i >= 0; i--) {
@@ -542,6 +554,12 @@
           since = data.total;
           while (list.children.length > 80) {
             list.removeChild(list.lastElementChild);
+          }
+        } else if (data.total === 0) {
+          since = 0;
+          if (empty && empty.hidden) {
+            empty.hidden = false;
+            if (!list.contains(empty)) list.appendChild(empty);
           }
         }
         if (data && typeof data.total === 'number') total = data.total;
@@ -588,8 +606,22 @@
   }
   if (clearBtn) {
     clearBtn.addEventListener('click', function () {
-      fetch('/api/job/ack', { method: 'POST' })
-        .then(function () { location.reload(); });
+      fetch('/api/job/events/clear', { method: 'POST' })
+        .then(function () {
+          since = 0;
+          total = 0;
+          if (list) {
+            list.innerHTML = '';
+            if (empty) {
+              empty.hidden = false;
+              list.appendChild(empty);
+            }
+          }
+          if (counter) counter.textContent = '0 events';
+          if (clearBtn) clearBtn.hidden = true;
+          setBadge(false, 0);
+        })
+        .catch(function () { /* fallback */ });
     });
   }
   window.ConftechUI = window.ConftechUI || {};
