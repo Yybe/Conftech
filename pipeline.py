@@ -41,6 +41,131 @@ load_dotenv()
 
 # ─── Domain resolution for intent signals ────────────────────────────────────
 
+def _normalize_product(raw: str) -> str:
+    """Extract a clean product keyword from any input (user query, scraper
+    query, target_product). Strips site: / quotes / search operators so
+    every lead with the same intent gets grouped under one product name.
+
+    Output is title-cased (each word capitalized) so 'cloud migration
+    services' and 'Cloud Migration Services' collapse to the same group.
+
+    Examples:
+      'site:linkedin.com/posts "need a" "Cloud Migration Services"'
+          -> 'Cloud Migration Services'
+      '"Cloud Migration Services engineer" hiring'
+          -> 'Cloud Migration Services'
+      'looking for cloud migration cloud migration services'
+          -> 'Cloud Migration Services'
+    """
+    if not raw:
+        return ""
+    import re as _re
+    # Words that are *suffix modifiers* — drop them only when they trail the
+    # quoted phrase, never from inside a multi-word product like "Cloud
+    # Migration Services". Match at the END of the string with optional
+    # whitespace before.
+    suffix_pattern = _re.compile(
+        r"\s+(?:engineer|architect|specialist|consultant|consulting|company|companies|provider|help|partner|manager|lead|hire|hiring|job|jobs|career|careers|role|roles)\s*$",
+        _re.IGNORECASE,
+    )
+    # 1. Pull out the last quoted phrase — that's almost always the product
+    quoted = _re.findall(r'"([^"]+)"', raw)
+    if quoted:
+        candidate = quoted[-1]
+        # Strip regex `.*` wildcards from inside the quoted phrase too
+        candidate = _re.sub(r"\.\*", " ", candidate)
+        # Strip leading filler words inside the quoted phrase too
+        candidate = _leading_filler_re.sub("", candidate).strip()
+        # Drop trailing role/job filler only (e.g. "Cloud Migration engineer" -> "Cloud Migration")
+        candidate = suffix_pattern.sub("", candidate).strip()
+        # Collapse internal whitespace
+        candidate = _re.sub(r"\s+", " ", candidate).strip()
+        if candidate:
+            return _title_case(_dedupe_words(candidate))
+    # 2. Fallback: strip site: / inurl: / intitle: / Boolean operators
+    cleaned = _re.sub(r"site:\S+", "", raw, flags=_re.IGNORECASE)
+    cleaned = _re.sub(r"\b(?:inurl:|intitle:|filetype:|inanchor:)\S*", "", cleaned, flags=_re.IGNORECASE)
+    cleaned = _re.sub(r"\b(?:OR|AND)\b", " ", cleaned, flags=_re.IGNORECASE)
+    cleaned = _re.sub(r"\.\*?", " ", cleaned)  # regex `.*` or `?` wildcards
+    cleaned = _re.sub(r"\*", " ", cleaned)  # any other stray `*`
+    cleaned = _re.sub(r"\"", "", cleaned)
+    # Strip leading filler like "looking for", "best", "recommend me a"
+    cleaned = _leading_filler_re.sub("", cleaned).strip()
+    # Drop trailing suffix filler
+    cleaned = suffix_pattern.sub("", cleaned).strip()
+    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+    return _title_case(_dedupe_words(cleaned)) or raw
+
+
+def _dedupe_words(s: str) -> str:
+    """Collapse consecutive duplicate words from a query string.
+    e.g. 'cloud migration cloud migration services' -> 'cloud migration services'.
+    Case-insensitive (the first occurrence wins)."""
+    if not s:
+        return s
+    out: list[str] = []
+    seen_lower: set[str] = set()
+    for tok in s.split():
+        if tok.lower() in seen_lower:
+            continue
+        seen_lower.add(tok.lower())
+        out.append(tok)
+    return " ".join(out)
+
+
+# Words that stay lowercase in title-cased product names. Keeps acronyms like
+# "AWS", "CI/CD", "GCP" intact and avoids Title-Casing prepositions when they
+# trail a name.
+_TITLE_STOPWORDS = {"and", "or", "of", "the", "for", "to", "in", "on", "at"}
+
+
+def _title_case(s: str) -> str:
+    """Title-case a product name, preserving acronyms (AWS, GCP, CI/CD, etc.)."""
+    if not s:
+        return s
+    out: list[str] = []
+    for i, tok in enumerate(s.split()):
+        if not tok:
+            continue
+        # 1. Keep all-caps acronyms and mixed-case tokens (e.g. "vSphere", "GitHub") as-is
+        if tok.isupper() or any(c.isupper() for c in tok[1:]):
+            out.append(tok)
+            continue
+        # 2. Short lowercase tokens that are well-known acronyms (length <= 4,
+        #    mostly consonants like "aws", "gcp", "sap", "api") get uppercased.
+        if tok.islower() and len(tok) <= 4 and tok.lower() in {
+            "aws", "gcp", "sap", "api", "crm", "erp", "db", "vm", "cdn", "sso",
+            "ml", "ai", "qa", "ci", "cd", "iot", "sre", "bi", "k8s",
+        }:
+            out.append(tok.upper())
+            continue
+        # 3. Trailing stopwords stay lowercase ("Engineer for Hire" -> "Engineer for Hire")
+        if i > 0 and tok.lower() in _TITLE_STOPWORDS:
+            out.append(tok.lower())
+            continue
+        # 4. Default: title-case
+        out.append(tok[:1].upper() + tok[1:].lower())
+    return " ".join(out)
+
+
+# Pre-compile the leading-filler regex once at module load.
+import re as _re_module
+# Each filler word must be followed by whitespace or end-of-string — otherwise
+# the inner `\s+` groups in alternatives like "recommend me a" can backtrack
+# across the next word's leading space and eat the first character of the
+# actual product (e.g. turning "AWS Migration" into "WS Migration").
+_leading_filler_re = _re_module.compile(
+    r"^\s*(?:looking\s+for(?=\s|$)|need(?=\s|$)|best(?=\s|$)|"
+    r"recommend(?:\s+me)?(?:\s+a)?(?=\s|$)|top(?=\s|$)|"
+    r"hire(?=\s|$)|hiring(?=\s|$)|find(?=\s|$)|search(?:ing)?\s+for(?=\s|$)|"
+    r"who\s+can(?=\s|$)|can\s+anyone(?=\s|$)|anyone\s+know(?=\s|$)|"
+    r"we\s+need(?=\s|$)|i\s+need(?=\s|$)|get\s+me(?=\s|$)|"
+    r"need\s+help\s+with(?=\s|$)|help\s+with(?=\s|$)|help\s+migrating(?=\s|$)|help\s+me(?=\s|$)|"
+    r"site:\S+\s+)*",
+    _re_module.IGNORECASE,
+)
+
+
 def _ensure_domain(sig: IntentSignal) -> str:
     """Make sure a signal has a usable company domain."""
     # 1. Already set from enrichment
@@ -127,6 +252,7 @@ def score_intent_signal(sig: IntentSignal) -> int:
 def save_lead_from_signal(
     sig: IntentSignal,
     decision_makers: list[DecisionMaker],
+    target_product: str = "",
 ) -> dict[str, Any] | None:
     """Save an intent signal + its decision-makers as a lead row in Supabase.
 
@@ -210,7 +336,7 @@ def save_lead_from_signal(
         website=website,
         tech_stack=tech_stack,
         source=f"intent_{sig.source}",
-        target_product=sig.query_used or "",  # Best available context
+        target_product=_normalize_product(target_product or sig.query_used or company_name),
         contact_email=contact_email or None,
         company_profile=profile,
     )
@@ -343,7 +469,7 @@ def run_intent_pipeline(
         if not company:
             continue
         dms = all_decision_makers.get(company.lower(), [])
-        lead = save_lead_from_signal(sig, dms)
+        lead = save_lead_from_signal(sig, dms, target_product=target_product)
         if lead:
             saved_leads.append(lead)
             print(f"  ✓ {company} — fit={lead.get('fit_score')} — {dms[0].name if dms else 'no DM'}")

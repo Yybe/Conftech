@@ -35,7 +35,6 @@ import database as db
 class PipelineRequest(BaseModel):
     target_product: str
     limit: int = 10
-    buyer_persona: str = ""
 
 
 class StatusUpdate(BaseModel):
@@ -496,18 +495,16 @@ def _draft_email_bg(lead_id: str) -> None:
 # decision-maker finder → score → save). Uses the same _JOB_STATE so the
 # dashboard's status widget + activity panel Just Work for both pipelines.
 
-def _run_hunt_bg(target_product: str, limit: int, buyer_persona: str = "", verify_emails: bool = False) -> None:
+def _run_hunt_bg(target_product: str, limit: int, verify_emails: bool = False) -> None:
     from pipeline import run_intent_pipeline
 
     _job_start(target_product, limit)
-    _JOB_STATE["buyer_persona"] = buyer_persona
     _JOB_STATE["mode"] = "hunt"
     _JOB_STATE["leads_excluded"] = 0
     try:
         _job_update("hunting", "Hunting intent signals", message=f"Scraping Reddit, HN, LinkedIn, job boards for '{target_product}'...")
         result = run_intent_pipeline(
             target_product,
-            buyer_persona=buyer_persona,
             limit=limit,
             verify_emails=verify_emails,
         )
@@ -717,23 +714,21 @@ def build_app() -> FastAPI:
     def run_hunt(
         target_product: str = Form(...),
         limit: int = Form(15),
-        buyer_persona: str = Form(""),
         verify_emails: str = Form(""),
         bg: BackgroundTasks = BackgroundTasks(),
     ):
         verify = str(verify_emails).lower() in ("1", "true", "yes", "on")
-        bg.add_task(_run_hunt_bg, target_product, limit, buyer_persona, verify)
+        bg.add_task(_run_hunt_bg, target_product, limit, verify)
         return RedirectResponse("/leads?notice=hunt_started", status_code=303)
 
     @app.post("/api/hunt")
     def api_hunt(req: PipelineRequest, verify_emails: bool = False, bg: BackgroundTasks = BackgroundTasks()):
-        bg.add_task(_run_hunt_bg, req.target_product, req.limit, req.buyer_persona, verify_emails)
+        bg.add_task(_run_hunt_bg, req.target_product, req.limit, verify_emails)
         return {
             "job": "started",
             "mode": "hunt",
             "target_product": req.target_product,
             "limit": req.limit,
-            "buyer_persona": req.buyer_persona,
         }
 
     # --- JSON API (kept from v0.1) ------------------------------------------

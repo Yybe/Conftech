@@ -124,7 +124,6 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("hunt", help="INTENT-FIRST pipeline (recommended): find people asking for the service")
     p.add_argument("--target", required=True)
     p.add_argument("--limit", type=int, default=15)
-    p.add_argument("--persona", default="", help="Optional buyer persona (industry/size hints)")
     p.add_argument("--verify-emails", action="store_true", help="SMTP-verify candidate emails (slower)")
 
     p = sub.add_parser("pipeline", help="Legacy company-fit flow: prospect -> research -> score")
@@ -170,7 +169,6 @@ def main(argv: list[str] | None = None) -> int:
             from pipeline import run_intent_pipeline
             run_intent_pipeline(
                 args.target,
-                buyer_persona=args.persona,
                 limit=args.limit,
                 verify_emails=args.verify_emails,
             )

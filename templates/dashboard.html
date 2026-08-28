@@ -81,13 +81,6 @@
           Hunt
         </button>
       </div>
-      <input
-        type="text"
-        name="buyer_persona"
-        placeholder="(Optional) Buyer persona — e.g. mid-market wholesale distributors 50-2000 employees. Helps TheirStack filter."
-        class="field w-full text-sm"
-        style="background:rgba(15,22,38,0.5); color:var(--text-strong); border-color:var(--border)"
-      >
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]" style="color:var(--faint)">
         <span><strong style="color:var(--accent)">Hunt</strong> finds people asking for the service (intent signals) + the decision-maker to email at each company.</span>
         <label class="inline-flex items-center gap-1.5">
@@ -104,7 +97,6 @@
     <form method="post" action="/pipeline/run" id="legacy-form" class="hidden">
       <input type="hidden" name="target_product" value="">
       <input type="hidden" name="limit" value="10">
-      <input type="hidden" name="buyer_persona" value="">
     </form>
   </div>
 </section>
