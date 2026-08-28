@@ -50,13 +50,12 @@
 <section class="panel panel--hero p-6" data-reveal>
   <div class="flex flex-wrap items-center gap-6">
     <div class="min-w-0 flex-1">
-      <h1 class="text-2xl font-bold tracking-tight text-slate-50">Run the pipeline</h1>
+      <h1 class="text-2xl font-bold tracking-tight text-slate-50">Hunt for leads</h1>
       <p class="mt-1 text-sm" style="color:var(--muted)">
-        Prospect new leads for a target product, deep-research their websites,
-        and score them for fit — all in the background.
+        Find people who are <em>actively asking</em> for a service like yours — on Reddit, Hacker News, LinkedIn, and job boards — and surface the decision-maker at each company with a personalized email.
       </p>
     </div>
-    <form method="post" action="/pipeline/run" id="pipeline-form" class="flex w-full flex-col gap-3 sm:w-auto">
+    <form method="post" action="/hunt/run" id="pipeline-form" class="flex w-full flex-col gap-3 sm:w-auto">
       <div class="flex flex-wrap items-center gap-3">
         <input
           type="text"
@@ -71,27 +70,41 @@
             type="number"
             id="limit"
             name="limit"
-            value="10"
+            value="15"
             min="1"
             max="50"
             class="field w-20"
           >
         </div>
         <button type="submit" class="btn btn--primary" data-press>
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          Run pipeline
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          Hunt
         </button>
       </div>
       <input
         type="text"
         name="buyer_persona"
-        placeholder="(Optional) Buyer persona — e.g. mid-market wholesale distributors 50-2000 employees with QuickBooks or no modern WMS. Leave blank for a broader search."
+        placeholder="(Optional) Buyer persona — e.g. mid-market wholesale distributors 50-2000 employees. Helps TheirStack filter."
         class="field w-full text-sm"
         style="background:rgba(15,22,38,0.5); color:var(--text-strong); border-color:var(--border)"
       >
-      <div class="text-[11px]" style="color:var(--faint)">
-        <strong>Buyer persona is optional.</strong> With a persona, the prospector steers toward that industry / size / tech posture — and tags the leads that actually match with a <strong style="color:var(--accent)">BP</strong> chip. Without a persona, the search is broader and you'll see more leads (some of which won't match the persona). When the strict persona search returns nothing, the system automatically falls back to a broader search.
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]" style="color:var(--faint)">
+        <span><strong style="color:var(--accent)">Hunt</strong> finds people asking for the service (intent signals) + the decision-maker to email at each company.</span>
+        <label class="inline-flex items-center gap-1.5">
+          <input type="checkbox" name="verify_emails" value="1" class="rounded border-slate-600">
+          <span>SMTP-verify emails (slower)</span>
+        </label>
+        <a href="/pipeline/run" class="font-medium text-sky-400 hover:text-sky-300"
+           onclick="event.preventDefault(); document.getElementById('legacy-form').submit();">
+          or use legacy company-fit pipeline →
+        </a>
       </div>
+    </form>
+    {# Legacy pipeline form — hidden, triggered by the link above. #}
+    <form method="post" action="/pipeline/run" id="legacy-form" class="hidden">
+      <input type="hidden" name="target_product" value="">
+      <input type="hidden" name="limit" value="10">
+      <input type="hidden" name="buyer_persona" value="">
     </form>
   </div>
 </section>
@@ -369,7 +382,10 @@
       if (btn && btn.disabled) return;
       var data = new FormData(form);
       if (btn) { btn.disabled = true; btn.classList.add('opacity-60'); }
-      fetch('/pipeline/run', { method: 'POST', body: data, redirect: 'manual' })
+      // Hunt form posts to /hunt/run (the form's action attr); fall back
+      // to the action if we ever change the form's endpoint.
+      var endpoint = form.getAttribute('action') || '/hunt/run';
+      fetch(endpoint, { method: 'POST', body: data, redirect: 'manual' })
         .then(function () {
           // Update the URL with the inputs (so a manual reload re-runs) but
           // DO NOT navigate. The activity poller picks up the new job.
@@ -425,7 +441,10 @@
   var agentColors = {
     prospector: { icon: 'M21 21l-4.35-4.35M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z',  color: 'var(--accent)' },
     researcher: { icon: 'M4 6h16M4 12h16M4 18h10',                              color: '#38bdf8' },
-    scorer:     { icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z', color: '#f59e0b' }
+    scorer:     { icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z', color: '#f59e0b' },
+    intent_hunter: { icon: 'M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM21 21l-4.35-4.35', color: '#a78bfa' },
+    decision_maker: { icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM20 8v6M23 11h-6', color: '#34d399' },
+    ghostwriter: { icon: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z', color: '#fb7185' }
   };
   var kindClass = {
     llm_call: 'chip--accent', llm_reply: 'chip--accent', llm_score: 'chip--accent',

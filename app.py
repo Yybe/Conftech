@@ -2,10 +2,11 @@
 
 Commands:
   python app.py init-db                          create tables
-  python app.py pipeline --target "..." --limit 10   run full flow
-  python app.py prospect --target "..." --limit 10   run Prospector only
-  python app.py research --limit 20              run Deep Researcher only
-  python app.py score --limit 20                 run Scorer only
+  python app.py hunt --target "..." --limit 20   INTENT-FIRST pipeline (recommended)
+  python app.py pipeline --target "..." --limit 10   legacy company-fit pipeline
+  python app.py prospect --target "..." --limit 10   legacy Prospector only
+  python app.py research --limit 20              legacy Deep Researcher only
+  python app.py score --limit 20                 legacy Scorer only
   python app.py ghostwrite [--lead-id <uuid>]    run Ghostwriter (approved -> drafts)
   python app.py review                           human review of pending_review leads
   python app.py watch --interval 60              poll for approved leads -> ghostwrite
@@ -13,6 +14,10 @@ Commands:
 
 Status flow: raw -> researched -> pending_review -> approved -> drafted
                                           |-> rejected
+
+NEW 'hunt' command runs the Intent-First pipeline (pipeline.py):
+  Reddit / HN / LinkedIn / Job boards + TheirStack -> LLM enrich ->
+  Decision-Maker finder -> Save leads with real human contact info.
 """
 
 from __future__ import annotations
@@ -116,7 +121,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init-db", help="Create leads + outreach_drafts tables")
 
-    p = sub.add_parser("pipeline", help="Full flow: prospect -> research -> score")
+    p = sub.add_parser("hunt", help="INTENT-FIRST pipeline (recommended): find people asking for the service")
+    p.add_argument("--target", required=True)
+    p.add_argument("--limit", type=int, default=15)
+    p.add_argument("--persona", default="", help="Optional buyer persona (industry/size hints)")
+    p.add_argument("--verify-emails", action="store_true", help="SMTP-verify candidate emails (slower)")
+
+    p = sub.add_parser("pipeline", help="Legacy company-fit flow: prospect -> research -> score")
     p.add_argument("--target", required=True)
     p.add_argument("--limit", type=int, default=10)
     p.add_argument(
@@ -155,6 +166,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "init-db":
             db.init_schema()
+        elif args.cmd == "hunt":
+            from pipeline import run_intent_pipeline
+            run_intent_pipeline(
+                args.target,
+                buyer_persona=args.persona,
+                limit=args.limit,
+                verify_emails=args.verify_emails,
+            )
         elif args.cmd == "pipeline":
             run_pipeline(args.target, args.limit, buyer_persona=args.persona)
         elif args.cmd == "prospect":

@@ -5,6 +5,8 @@ httpx>=0.27.0
 python-dotenv>=1.0.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+# DNS lookups for SMTP-based email verification (decision_maker.py)
+dnspython>=2.4.0
 
 # API server + web UI (background jobs, Jinja2 templates)
 fastapi>=0.110.0

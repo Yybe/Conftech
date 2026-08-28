@@ -491,6 +491,58 @@ def _draft_email_bg(lead_id: str) -> None:
         print(f"[web] ghostwrite failed for {lead_id}: {exc}")
 
 
+# ─── Intent-Hunt background job ───────────────────────────────────────────────
+# Runs the new intent-first pipeline (Reddit/HN/LinkedIn/jobs → enrich →
+# decision-maker finder → score → save). Uses the same _JOB_STATE so the
+# dashboard's status widget + activity panel Just Work for both pipelines.
+
+def _run_hunt_bg(target_product: str, limit: int, buyer_persona: str = "", verify_emails: bool = False) -> None:
+    from pipeline import run_intent_pipeline
+
+    _job_start(target_product, limit)
+    _JOB_STATE["buyer_persona"] = buyer_persona
+    _JOB_STATE["mode"] = "hunt"
+    _JOB_STATE["leads_excluded"] = 0
+    try:
+        _job_update("hunting", "Hunting intent signals", message=f"Scraping Reddit, HN, LinkedIn, job boards for '{target_product}'...")
+        result = run_intent_pipeline(
+            target_product,
+            buyer_persona=buyer_persona,
+            limit=limit,
+            verify_emails=verify_emails,
+        )
+        n = result.get("leads_saved", 0)
+        n_sigs = result.get("signals_found", 0)
+        n_dms = result.get("decision_makers_found", 0)
+        _JOB_STATE["leads_found"] = n
+        _JOB_STATE["leads_known"] = 0
+        _JOB_STATE["leads_excluded"] = 0
+        if n == 0:
+            _job_update(
+                "hunting",
+                "Hunt complete",
+                message=(
+                    f"No leads saved for '{target_product}' from {n_sigs} intent signal(s). "
+                    "Try a different target product or raise the limit."
+                ),
+            )
+        else:
+            _job_update(
+                "hunting",
+                "Hunt complete",
+                message=(
+                    f"Hunt complete: {n} lead(s) saved from {n_sigs} intent signal(s) "
+                    f"({n_dms} decision-maker(s) found). All in pending_review with auto-drafted emails."
+                ),
+            )
+        _job_finish()
+        print(f"[web] hunt done: {n} leads saved (signals={n_sigs}, dms={n_dms})")
+    except Exception as exc:
+        _record_incident("hunting", "hunt", exc)
+        _job_finish(error=str(exc))
+        print(f"[web] hunt failed: {exc}")
+
+
 # --- App factory --------------------------------------------------------------
 
 def build_app() -> FastAPI:
@@ -660,6 +712,29 @@ def build_app() -> FastAPI:
     ):
         bg.add_task(_run_pipeline_bg, target_product, limit, buyer_persona)
         return RedirectResponse("/leads?notice=started", status_code=303)
+
+    @app.post("/hunt/run")
+    def run_hunt(
+        target_product: str = Form(...),
+        limit: int = Form(15),
+        buyer_persona: str = Form(""),
+        verify_emails: str = Form(""),
+        bg: BackgroundTasks = BackgroundTasks(),
+    ):
+        verify = str(verify_emails).lower() in ("1", "true", "yes", "on")
+        bg.add_task(_run_hunt_bg, target_product, limit, buyer_persona, verify)
+        return RedirectResponse("/leads?notice=hunt_started", status_code=303)
+
+    @app.post("/api/hunt")
+    def api_hunt(req: PipelineRequest, verify_emails: bool = False, bg: BackgroundTasks = BackgroundTasks()):
+        bg.add_task(_run_hunt_bg, req.target_product, req.limit, req.buyer_persona, verify_emails)
+        return {
+            "job": "started",
+            "mode": "hunt",
+            "target_product": req.target_product,
+            "limit": req.limit,
+            "buyer_persona": req.buyer_persona,
+        }
 
     # --- JSON API (kept from v0.1) ------------------------------------------
 

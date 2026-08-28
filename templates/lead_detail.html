@@ -5,6 +5,8 @@
 {% set sd = lead.scraped_data or {} %}
 {% set cp = lead.company_profile or {} %}
 {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+{% set dms = cp.decision_makers or [] %}
+{% set primary_dm = dms[0] if dms else None %}
 {% set seg_labels = {
   'smb_mid': 'SMB / Mid-market',
   'listing': 'Publicly listed',
@@ -50,7 +52,11 @@
         <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
       </a>
       {% endif %}
-      {% if lead.contact_email %}<a href="mailto:{{ lead.contact_email }}" class="hover:text-sky-300">{{ lead.contact_email }}</a>{% endif %}
+      {% if primary_dm %}
+        <span class="font-semibold text-slate-200">{{ primary_dm.name }}</span>
+        {% if primary_dm.title %}<span class="text-slate-500">— {{ primary_dm.title }}</span>{% endif %}
+        {% if primary_dm.email %}<a href="mailto:{{ primary_dm.email }}" class="font-medium text-sky-400 hover:text-sky-300">{{ primary_dm.email }}</a>{% endif %}
+      {% elif lead.contact_email %}<a href="mailto:{{ lead.contact_email }}" class="hover:text-sky-300">{{ lead.contact_email }}</a>{% endif %}
       <span>Discovered {{ lead.created_at|fmt_dt }}</span>
       {% if mission_byline %}<span class="text-slate-600">— {{ mission_byline }}</span>{% endif %}
     </div>
@@ -66,6 +72,85 @@
     </div>
     {% endif %}
   </div>
+
+{# ---------- Intent signal + decision-makers (intent-hunt leads) ---------- #}
+{# This block is the differentiator: for intent-hunt leads we want the human
+   reviewer to see the post that proves this is a real lead + the actual person
+   we'd email at this company. Renders nothing for legacy company-fit leads. #}
+{% if cp.post_title or dms %}
+<section class="mt-6 grid gap-4 lg:grid-cols-5" data-reveal>
+  {# Intent signal: the post/comment/job that started this lead. #}
+  <div class="lg:col-span-3 rounded-xl border p-5" style="border-color:rgba(167,139,250,0.4); background:rgba(167,139,250,0.08)">
+    <div class="flex flex-wrap items-center gap-2">
+      <svg class="h-4 w-4" style="color:#c4b5fd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <div class="type-label" style="color:#c4b5fd">Intent signal — why this is a real lead</div>
+      {% if cp.source %}<span class="chip" style="background:rgba(167,139,250,0.18); color:#c4b5fd">{{ cp.source }}</span>{% endif %}
+      {% if cp.source_name %}<span class="chip">{{ cp.source_name }}</span>{% endif %}
+      {% if cp.intent_confidence %}
+      <span class="chip" style="background:rgba(52,211,153,0.18); color:#6ee7b7" title="LLM-estimated intent strength">{{ (cp.intent_confidence * 100)|round(0, 'floor')|int }}% intent</span>
+      {% endif %}
+    </div>
+    {% if cp.post_title %}
+    <div class="mt-3 text-base font-semibold text-slate-100">{{ cp.post_title }}</div>
+    {% endif %}
+    {% if cp.post_snippet %}
+    <blockquote class="mt-2 border-l-2 pl-3 text-sm leading-relaxed" style="border-color:#a78bfa; color:#cbd5e1">"{{ cp.post_snippet }}"</blockquote>
+    {% endif %}
+    <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]" style="color:var(--faint)">
+      {% if cp.source_url %}
+      <a href="{{ cp.source_url }}" target="_blank" rel="noopener" class="font-semibold text-sky-400 underline underline-offset-2 hover:text-sky-300">View source ↗</a>
+      {% endif %}
+      {% if cp.posted_at %}<span>posted {{ cp.posted_at|fmt_dt }}</span>{% endif %}
+      {% if cp.query_used %}<span>query: "{{ cp.query_used|truncate(40, True) }}"</span>{% endif %}
+    </div>
+  </div>
+
+  {# Decision-makers: the actual people we'd email. #}
+  <div class="lg:col-span-2 rounded-xl border p-5" style="border-color:rgba(52,211,153,0.4); background:rgba(52,211,153,0.08)">
+    <div class="flex flex-wrap items-center gap-2">
+      <svg class="h-4 w-4" style="color:#6ee7b7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
+      <div class="type-label" style="color:#6ee7b7">Decision-makers</div>
+      <span class="chip" style="background:rgba(52,211,153,0.18); color:#6ee7b7">{{ dms|length }} found</span>
+    </div>
+    {% if dms %}
+    <ul class="mt-3 space-y-3">
+      {% for dm in dms %}
+      <li class="rounded-lg border p-3" style="border-color:rgba(52,211,153,0.25); background:rgba(15,22,38,0.55)">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-sm font-semibold text-slate-100">{{ dm.name }}</div>
+            {% if dm.title %}<div class="text-xs" style="color:var(--muted)">{{ dm.title }}</div>{% endif %}
+          </div>
+          {% if dm.email %}
+          <a href="mailto:{{ dm.email }}" class="shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold"
+             style="background:rgba(56,189,248,0.18); color:#7dd3fc">Email</a>
+          {% endif %}
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+          {% if dm.email %}
+          <span class="font-mono" style="color:var(--muted)">{{ dm.email }}</span>
+          {% if dm.email_confidence is number and dm.email_confidence >= 0.7 %}
+          <span class="chip chip--ok" title="SMTP-verified">verified</span>
+          {% elif dm.email %}
+          <span class="chip" style="color:var(--faint)" title="Pattern-guess, not SMTP-verified">pattern</span>
+          {% endif %}
+          {% endif %}
+          {% if dm.linkedin_url %}
+          <a href="{{ dm.linkedin_url }}" target="_blank" rel="noopener" class="text-sky-400 underline-offset-2 hover:underline">LinkedIn ↗</a>
+          {% endif %}
+        </div>
+        {% if dm.source_url %}
+        <div class="mt-1.5 text-[10px]" style="color:var(--faint)">found on {{ dm.source_url|replace('https://', '')|replace('http://', '')|truncate(48, True) }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-3 text-sm" style="color:var(--faint)">No decision-maker was found for this company. The lead is still worth reviewing — the company_profile.source_url points at the post that prompted the lead.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 
   <div class="flex flex-wrap items-center gap-6">
     <div class="flex items-end gap-6">
@@ -249,6 +334,8 @@
 </section>
 
 {# ---------- Research data ---------- #}
+{# Only render for legacy company-fit leads (intent-hunt leads have no scraped_data). #}
+{% if sd.extractor or sd.pages_crawled or sd.summary or sd.pain_points or sd.evidence or sd.contact_emails or sd.contact_emails_ranked or sd.buying_signals or sd.product_mentions %}
 <section class="mt-8" data-reveal>
   <div class="mb-3 flex flex-wrap items-center gap-3">
     <h2 class="type-heading">Research</h2>
@@ -450,6 +537,7 @@
     {% endif %}
   </div>
 </section>
+{% endif %}
 
 {# ---------- Tech stack ---------- #}
 {% if lead.tech_stack %}

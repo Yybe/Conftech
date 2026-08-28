@@ -70,6 +70,12 @@
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
   Pipeline started — new leads will appear here shortly.
 </div>
+{% elif notice == 'hunt_started' %}
+<div class="mt-5 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm" data-reveal
+     style="border-color:color-mix(in srgb, #a78bfa 45%, transparent); background:rgba(167,139,250,0.12); color:#c4b5fd">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+  Hunt started — scraping Reddit, HN, LinkedIn &amp; job boards. New leads will appear here shortly.
+</div>
 {% endif %}
 
 {# ---------- Persistent red error banner (block + dismiss) ---------- #}
@@ -136,6 +142,14 @@
   {% set sd = lead.scraped_data or {} %}
   {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
   {% set cp = lead.company_profile or {} %}
+  {# Intent-hunt leads store the human to email in cp.decision_makers[]; legacy leads
+     fall back to the row's contact_email column. #}
+  {% set primary_dm = (cp.decision_makers or [None])[0] if cp else None %}
+  {% set dm_name = primary_dm.name if primary_dm else '' %}
+  {% set dm_title = primary_dm.title if primary_dm else '' %}
+  {% set dm_email = primary_dm.email if primary_dm else '' %}
+  {% set intent_source = cp.source if cp else '' %}
+  {% set intent_url = cp.source_url if cp else '' %}
   <article class="row-card" data-reveal data-hideable {% if loop.index > 25 %}hidden{% endif %}>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3.5">
       {# Company block: name + status inline, meta line, classification chips #}
@@ -148,8 +162,13 @@
           {% if lead.website %}
           <a href="{{ lead.website }}" target="_blank" rel="noopener" class="hover:text-sky-300">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(32, True) }}</a>
           {% endif %}
-          {% if lead.contact_email %}<span>{{ lead.contact_email }}</span>{% endif %}
+          {# Decision-maker (intent-hunt leads) takes priority over the generic contact_email. #}
+          {% if dm_name %}
+          <span class="font-medium text-slate-200" title="Decision-maker found by intent-hunt pipeline">{{ dm_name }}{% if dm_title %}<span style="color:var(--faint)">, {{ dm_title }}</span>{% endif %}</span>
+          {% elif lead.contact_email %}<span>{{ lead.contact_email }}</span>{% endif %}
+          {% if dm_email %}<a href="mailto:{{ dm_email }}" class="text-sky-400 hover:text-sky-300">{{ dm_email }}</a>{% elif lead.contact_email %}<a href="mailto:{{ lead.contact_email }}" class="hover:text-sky-300">{{ lead.contact_email }}</a>{% endif %}
           {% if lead.target_product %}<span class="font-medium text-slate-500">{{ lead.target_product }}</span>{% endif %}
+          {% if intent_source %}<span class="chip" style="background:rgba(167,139,250,0.18); color:#c4b5fd" title="Intent source: {{ cp.source_name or '' }}">via {{ intent_source }}{% if cp.source_name %} ({{ cp.source_name }}){% endif %}</span>{% endif %}
           {% if lead.buyer_persona %}<span class="chip" title="buyer persona: {{ lead.buyer_persona|truncate(80, True) }}">persona: {{ lead.buyer_persona|truncate(36, True) }}</span>{% endif %}
           {% if lead.matches_persona is sameas true or (lead.company_profile and (lead.company_profile or {}).get('matches_persona') is sameas true) %}
             <span class="chip" style="background:rgba(56,189,248,0.18); color:#7dd3fc; font-weight:700" title="Matches the buyer persona">BP</span>
@@ -208,6 +227,27 @@
     <div class="expand" id="lead-exp-{{ loop.index }}">
       <div class="expand__inner">
         <div class="border-t px-4 py-4" style="border-color:var(--border)">
+          {# Intent-hunt leads: show the post/comment that proves this is a real lead. #}
+          {% if cp.post_title or intent_url %}
+          <div class="mb-3 rounded-lg border p-3" style="border-color:rgba(167,139,250,0.35); background:rgba(167,139,250,0.08)">
+            <div class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider" style="color:#c4b5fd">
+              <span>Intent signal</span>
+              {% if cp.source %}<span class="chip" style="background:rgba(167,139,250,0.18); color:#c4b5fd">{{ cp.source }}</span>{% endif %}
+              {% if cp.source_name %}<span style="color:var(--faint)">· {{ cp.source_name }}</span>{% endif %}
+            </div>
+            {% if cp.post_title %}
+            <div class="mt-1 text-sm font-semibold text-slate-100">{{ cp.post_title }}</div>
+            {% endif %}
+            {% if cp.post_snippet %}
+            <p class="mt-1 text-xs leading-relaxed" style="color:var(--muted)">"{{ cp.post_snippet|truncate(220, True) }}"</p>
+            {% endif %}
+            {% if intent_url %}
+            <a href="{{ intent_url }}" target="_blank" rel="noopener" class="mt-1.5 inline-flex items-center gap-1 text-[11px] text-sky-400 hover:text-sky-300">
+              View source →
+            </a>
+            {% endif %}
+          </div>
+          {% endif %}
           {% if lead.reasoning %}
           <p class="text-sm leading-relaxed text-slate-300">{{ lead.reasoning }}</p>
           {% elif sd.evidence %}
