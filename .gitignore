@@ -20,5 +20,6 @@ Thumbs.db
 # Logs
 *.log
 
-# OpenCode internal session state
+# Agent / IDE session state: these hold pasted API keys and run transcripts
 .omo/
+.zcode/
