@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Leads · Conftech{% endblock %}
+{% block head_extra %}
+  <script src="/static/leads.js" defer></script>
+{% endblock %}
 {% block content %}
 
 {% set seg_labels = {
@@ -18,52 +21,36 @@
   'public_sector': 'chip--bad',
   'service_provider': 'chip--bad'
 } %}
+{% set sort_options = [
+  ('fit_desc', 'Best fit first'),
+  ('confidence_desc', 'Most confident first'),
+  ('created_desc', 'Newest first'),
+  ('company_asc', 'Company A→Z'),
+] %}
+{% set status_options = [
+  ('raw', 'Raw'),
+  ('researched', 'Researched'),
+  ('pending_review', 'Pending review'),
+  ('approved', 'Approved'),
+  ('rejected', 'Rejected'),
+  ('drafted', 'Drafted'),
+  ('error', 'Error'),
+] %}
 
+{# ---------- Page header ---------- #}
 <div class="flex flex-wrap items-end justify-between gap-4" data-reveal>
   <div>
     <h1 class="text-2xl font-bold tracking-tight text-slate-50">Leads</h1>
-    <p class="mt-1 text-sm" style="color:var(--muted)">
-      <span data-load-count>{{ leads|length }}</span> lead(s) shown
+    <p class="mt-1 text-sm flex items-center gap-2" style="color:var(--muted)">
+      <span><span data-load-count>{{ leads|length }}</span> shown</span>
+      <span style="color:var(--faint)">·</span>
+      <span style="color:var(--faint)"><span data-total-count>{{ counts.values()|sum }}</span> total</span>
     </p>
   </div>
-  <form method="get" action="/leads" class="flex items-center gap-2">
-    {% if current_status %}
-    <input type="hidden" name="status" value="{{ current_status }}">
-    {% endif %}
-    {% if target_product %}
-    <input type="hidden" name="target_product" value="{{ target_product }}">
-    {% endif %}
-    <input
-      type="number"
-      name="min_score"
-      value="{{ min_score or '' }}"
-      placeholder="Min fit score"
-      min="0"
-      max="100"
-      class="field w-32"
-    >
-    <button type="submit" class="btn btn--ghost" data-press>Filter</button>
-    {% if current_status or min_score or target_product %}
-    <a href="/leads" class="rounded-lg px-2 py-2 text-sm text-slate-400 hover:text-slate-200">Clear</a>
-    {% endif %}
-  </form>
+  <a href="/leads" class="rounded-lg px-2 py-2 text-sm text-slate-400 hover:text-slate-200">Reset all filters</a>
 </div>
 
-{# ---------- Product filter (segmented) ---------- #}
-{% if products %}
-<div class="mt-6" data-reveal>
-  <div class="seg">
-    {% set all_count = counts.values()|sum %}
-    <a href="/leads{% if current_status %}?status={{ current_status }}{% endif %}" class="{{ '' if target_product else 'is-active' }}">All products<span class="seg__count">{{ all_count }}</span></a>
-    {% for p in products %}
-    {% set href = '/leads?target_product=' ~ p|urlencode %}
-    {% if current_status %}{% set href = href ~ '&status=' ~ current_status %}{% endif %}
-    <a href="{{ href }}" class="{{ 'is-active' if target_product == p else '' }}">{{ p }}<span class="seg__count">{{ leads_by_product.get(p, 0) }}</span></a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-
+{# ---------- Notice banners (kept from the previous design) ---------- #}
 {% if notice == 'started' %}
 <div class="mt-5 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm" data-reveal
      style="border-color:color-mix(in srgb, var(--accent) 40%, transparent); background:var(--accent-tint); color:var(--accent)">
@@ -78,7 +65,6 @@
 </div>
 {% endif %}
 
-{# ---------- Persistent red error banner (block + dismiss) ---------- #}
 {% if job_banner %}
 <div class="mt-5 rounded-xl border px-4 py-4 text-sm" data-reveal
      style="border-color:#7f1d1d; background:rgba(127,29,29,0.18); color:#fecaca">
@@ -101,204 +87,389 @@
         {{ job_banner.hint }}
       </div>
       {% endif %}
-      {% if job_banner.incidents and job_banner.incidents|length > 1 %}
-      <details class="mt-2 text-xs">
-        <summary class="cursor-pointer font-medium" style="color:#fda4af">{{ job_banner.incidents|length }} incident(s)</summary>
-        <ul class="mt-1.5 space-y-1">
-          {% for inc in job_banner.incidents %}
-          <li><span class="font-mono text-[11px]" style="color:#fca5a5">{{ inc.kind }} · {{ inc.source }} — {{ inc.error }}</span></li>
-          {% endfor %}
-        </ul>
-      </details>
-      {% endif %}
     </div>
-    <form method="post" action="/api/job/ack" onsubmit="event.preventDefault(); fetch('/api/job/ack',{method:'POST'}).then(()=>location.reload());">
-      <button type="submit" class="shrink-0 rounded-md px-2 py-1 text-xs font-semibold"
-              style="background:rgba(255,255,255,0.08); color:#fda4af" title="Dismiss this error">Dismiss</button>
-    </form>
   </div>
 </div>
 {% endif %}
 
-{# ---------- Status filter (segmented) ---------- #}
-<div class="mt-5 flex flex-wrap items-center gap-3" data-reveal>
-  <div class="seg">
-    <a href="/leads{% if target_product %}?target_product={{ target_product|urlencode }}{% endif %}" class="{{ 'is-active' if not current_status else '' }}">All<span class="seg__count">{{ counts.values()|sum }}</span></a>
-    {% for s in ['raw', 'researched', 'pending_review', 'approved', 'rejected', 'drafted', 'error'] %}
-    {% set href = '/leads?status=' ~ s %}
-    {% if target_product %}{% set href = href ~ '&target_product=' ~ target_product|urlencode %}{% endif %}
-    <a href="{{ href }}" class="{{ 'is-active' if current_status == s else '' }}">{{ s|status_label }}<span class="seg__count">{{ counts.get(s, 0) }}</span></a>
-    {% endfor %}
-  </div>
-  {% if current_status or min_score or target_product %}
-  <a href="/leads" class="text-xs font-medium text-sky-400 hover:text-sky-300">Clear filters</a>
-  {% endif %}
-</div>
-
-{# ---------- Lead rows ---------- #}
-{% if leads %}
-<div class="mt-4 space-y-2.5">
-  {% for lead in leads %}
-  {% set sd = lead.scraped_data or {} %}
-  {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
-  {% set cp = lead.company_profile or {} %}
-  {# Intent-hunt leads store the human to email in cp.decision_makers[]; legacy leads
-     fall back to the row's contact_email column. #}
-  {% set primary_dm = (cp.decision_makers or [None])[0] if cp else None %}
-  {% set dm_name = primary_dm.name if primary_dm else '' %}
-  {% set dm_title = primary_dm.title if primary_dm else '' %}
-  {% set dm_email = primary_dm.email if primary_dm else '' %}
-  {% set intent_source = cp.source if cp else '' %}
-  {% set intent_url = cp.source_url if cp else '' %}
-  <article class="row-card" data-reveal data-hideable {% if loop.index > 25 %}hidden{% endif %}>
-    <div class="flex flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3.5">
-      {# Company block: name + status inline, meta line, classification chips #}
-      <div class="min-w-0 flex-1 basis-64">
-        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <a href="/leads/{{ lead.id }}" class="truncate text-[15px] font-semibold text-slate-100 hover:text-sky-300">{{ lead.company_name }}</a>
-          <span class="status {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
-        </div>
-        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" style="color:var(--faint)">
-          {% if lead.website %}
-          <a href="{{ lead.website }}" target="_blank" rel="noopener" class="hover:text-sky-300">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(32, True) }}</a>
-          {% endif %}
-          {# Decision-maker (intent-hunt leads) takes priority over the generic contact_email. #}
-          {% if dm_name %}
-          <span class="font-medium text-slate-200" title="Decision-maker found by intent-hunt pipeline">{{ dm_name }}{% if dm_title %}<span style="color:var(--faint)">, {{ dm_title }}</span>{% endif %}</span>
-          {% elif lead.contact_email %}<span>{{ lead.contact_email }}</span>{% endif %}
-          {% if dm_email %}<a href="mailto:{{ dm_email }}" class="text-sky-400 hover:text-sky-300">{{ dm_email }}</a>{% elif lead.contact_email %}<a href="mailto:{{ lead.contact_email }}" class="hover:text-sky-300">{{ lead.contact_email }}</a>{% endif %}
-          {% if lead.target_product %}<span class="font-medium text-slate-500">{{ lead.target_product }}</span>{% endif %}
-          {% if intent_source %}<span class="chip" style="background:rgba(167,139,250,0.18); color:#c4b5fd" title="Intent source: {{ cp.source_name or '' }}">via {{ intent_source }}{% if cp.source_name %} ({{ cp.source_name }}){% endif %}</span>{% endif %}
-          {% if lead.buyer_persona %}<span class="chip" title="buyer persona: {{ lead.buyer_persona|truncate(80, True) }}">persona: {{ lead.buyer_persona|truncate(36, True) }}</span>{% endif %}
-          {% if lead.matches_persona is sameas true or (lead.company_profile and (lead.company_profile or {}).get('matches_persona') is sameas true) %}
-            <span class="chip" style="background:rgba(56,189,248,0.18); color:#7dd3fc; font-weight:700" title="Matches the buyer persona">BP</span>
-          {% elif lead.buyer_persona %}
-            <span class="chip" style="color:var(--faint)" title="Outside the buyer persona (broader search)">broader</span>
-          {% endif %}
-          <span>{{ lead.created_at|fmt_dt }}</span>
-        </div>
-        {% if cp.segment or cp.employee_range or cp.industry %}
-        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {% if cp.segment %}
-          <span class="chip {{ seg_classes.get(cp.segment, '') }}" title="company_profile.segment">{{ seg_labels.get(cp.segment, cp.segment) }}</span>
-          {% endif %}
-          {% if cp.employee_range %}<span class="chip">{{ cp.employee_range }} employees</span>{% endif %}
-          {% if cp.industry %}<span class="chip">{{ cp.industry }}</span>{% endif %}
-        </div>
-        {% endif %}
-      </div>
-
-      {# Scores: the numbers driving the approve/reject decision #}
-      <div class="flex items-end gap-5">
-        <div class="text-right">
-          <div class="score-label">Fit</div>
-          <div class="mt-0.5 {{ lead.fit_score|fit_color }}">
-            <span class="score score--md">{{ lead.fit_score if lead.fit_score is not none else '—' }}</span>
-            {% if lead.fit_score is not none %}
-            <div class="track mt-1 w-16"><i style="--p:{{ lead.fit_score }}%"></i></div>
-            {% endif %}
-          </div>
-        </div>
-        <div class="text-right">
-          <div class="score-label">Confidence</div>
-          <div class="mt-0.5" style="color:var(--accent)">
-            <span class="score score--md">{{ conf if conf is not none else '—' }}{% if conf is not none %}<span class="text-xs font-bold">%</span>{% endif %}</span>
-            {% if conf is not none %}
-            <div class="track mt-1 w-16"><i style="--p:{{ conf }}%"></i></div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-
-      {# Expand toggle #}
-      <button
-        type="button"
-        class="row-toggle shrink-0"
-        data-expander
-        aria-controls="lead-exp-{{ loop.index }}"
-        aria-expanded="false"
-        title="Show evidence"
+{# ====================================================================
+   FILTER BAR — single row, debounced search, sliders, switches, sort.
+   The bar lives in a <form method="get"> so reviewers can share a URL
+   that recreates their exact view.
+   ==================================================================== #}
+<form id="leads-filter" method="get" action="/leads" class="leads-filter" data-reveal>
+  <div class="leads-filter__row">
+    {# Search #}
+    <label class="leads-filter__field leads-filter__field--search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="leads-filter__icon"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input
+        id="filter-search"
+        type="search"
+        name="q"
+        value="{{ q or '' }}"
+        placeholder="Search company, person, email, or reasoning…"
+        autocomplete="off"
+        class="leads-filter__input"
       >
-        <svg class="chev h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+      <kbd class="leads-filter__kbd">/</kbd>
+    </label>
+
+    {# Fit score slider #}
+    <div class="leads-filter__field leads-filter__field--slider">
+      <label for="filter-fit" class="leads-filter__label">Min fit</label>
+      <input
+        id="filter-fit"
+        type="range"
+        name="min_score"
+        min="0" max="100" step="5"
+        value="{{ min_score if min_score is not none else 0 }}"
+        class="leads-filter__range"
+        data-range-output="fit-out"
+      >
+      <output id="fit-out" class="leads-filter__readout">{{ min_score if min_score is not none else 0 }}</output>
+    </div>
+
+    {# Confidence slider #}
+    <div class="leads-filter__field leads-filter__field--slider">
+      <label for="filter-conf" class="leads-filter__label">Min conf</label>
+      <input
+        id="filter-conf"
+        type="range"
+        name="min_confidence"
+        min="0" max="100" step="5"
+        value="{{ min_confidence if min_confidence is not none else 0 }}"
+        class="leads-filter__range"
+        data-range-output="conf-out"
+      >
+      <output id="conf-out" class="leads-filter__readout">{{ min_confidence if min_confidence is not none else 0 }}</output>
+    </div>
+
+    {# Sort #}
+    <label class="leads-filter__field leads-filter__field--select">
+      <span class="leads-filter__label">Sort</span>
+      <select name="sort" class="leads-filter__select">
+        {% for key, label in sort_options %}
+        <option value="{{ key }}" {{ 'selected' if sort == key else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+
+  <div class="leads-filter__row leads-filter__row--chips">
+    {# Has decision-maker switch #}
+    <label class="leads-filter__switch" title="Show only leads that have a decision-maker email">
+      <input type="checkbox" name="has_dm" value="on" {{ 'checked' if has_dm else '' }}>
+      <span class="leads-filter__switch-track"><span class="leads-filter__switch-thumb"></span></span>
+      <span>Has decision-maker</span>
+    </label>
+    <label class="leads-filter__switch" title="Show only leads that match the buyer persona">
+      <input type="checkbox" name="matches_persona" value="on" {{ 'checked' if matches_persona else '' }}>
+      <span class="leads-filter__switch-track"><span class="leads-filter__switch-thumb"></span></span>
+      <span>Matches persona</span>
+    </label>
+
+    {# Status chips (multi-select rendered as checkboxes) #}
+    <div class="leads-filter__chips" role="group" aria-label="Status filter">
+      <button type="button" class="chip {{ '' if current_status else 'is-active' }}" data-status-clear>All statuses</button>
+      {% for s, label in status_options %}
+      <label class="chip {{ 'is-active' if current_status == s else '' }}" data-status-chip>
+        <input type="radio" name="status" value="{{ s }}" {{ 'checked' if current_status == s else '' }}>
+        <span>{{ label }}</span>
+        <span class="seg__count">{{ counts.get(s, 0) }}</span>
+      </label>
+      {% endfor %}
+    </div>
+
+    {# Product chips (single-select) #}
+    {% if products %}
+    <div class="leads-filter__chips" role="group" aria-label="Product filter">
+      <button type="button" class="chip {{ '' if target_product else 'is-active' }}" data-product-clear>All products</button>
+      {% for p in products %}
+      <label class="chip {{ 'is-active' if target_product == p else '' }}" data-product-chip>
+        <input type="radio" name="target_product" value="{{ p }}" {{ 'checked' if target_product == p else '' }}>
+        <span>{{ p }}</span>
+        <span class="seg__count">{{ leads_by_product.get(p, 0) }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <button type="submit" class="btn btn--primary ml-auto" data-press>Apply</button>
+  </div>
+</form>
+
+{# ====================================================================
+   BULK ACTIONS BAR — appears when ≥1 row is selected.
+   ==================================================================== #}
+<div id="bulk-bar" class="bulk-bar" hidden>
+  <div class="bulk-bar__inner">
+    <div class="bulk-bar__count">
+      <span data-bulk-count>0</span> selected
+    </div>
+    <div class="bulk-bar__actions">
+      <button type="button" class="btn btn--success" data-bulk-action="approved">
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Approve
       </button>
+      <button type="button" class="btn btn--danger" data-bulk-action="rejected">
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Reject
+      </button>
+      <button type="button" class="btn btn--ghost" data-bulk-clear>Clear selection</button>
     </div>
+  </div>
+</div>
 
-    {# Expandable evidence preview: full reasoning instead of the 110-char truncation #}
-    <div class="expand" id="lead-exp-{{ loop.index }}">
-      <div class="expand__inner">
-        <div class="border-t px-4 py-4" style="border-color:var(--border)">
-          {# Intent-hunt leads: show the post/comment that proves this is a real lead. #}
-          {% if cp.post_title or intent_url %}
-          <div class="mb-3 rounded-lg border p-3" style="border-color:rgba(167,139,250,0.35); background:rgba(167,139,250,0.08)">
-            <div class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider" style="color:#c4b5fd">
-              <span>Intent signal</span>
-              {% if cp.source %}<span class="chip" style="background:rgba(167,139,250,0.18); color:#c4b5fd">{{ cp.source }}</span>{% endif %}
-              {% if cp.source_name %}<span style="color:var(--faint)">· {{ cp.source_name }}</span>{% endif %}
-            </div>
-            {% if cp.post_title %}
-            <div class="mt-1 text-sm font-semibold text-slate-100">{{ cp.post_title }}</div>
-            {% endif %}
-            {% if cp.post_snippet %}
-            <p class="mt-1 text-xs leading-relaxed" style="color:var(--muted)">"{{ cp.post_snippet|truncate(220, True) }}"</p>
-            {% endif %}
-            {% if intent_url %}
-            <a href="{{ intent_url }}" target="_blank" rel="noopener" class="mt-1.5 inline-flex items-center gap-1 text-[11px] text-sky-400 hover:text-sky-300">
-              View source →
-            </a>
-            {% endif %}
-          </div>
-          {% endif %}
-          {% if lead.reasoning %}
-          <p class="text-sm leading-relaxed text-slate-300">{{ lead.reasoning }}</p>
-          {% elif sd.evidence %}
-          <p class="text-sm" style="color:var(--faint)">{{ sd.evidence|length }} finding(s), not yet scored.</p>
-          {% else %}
-          <p class="text-sm" style="color:var(--faint)">No research evidence yet.</p>
-          {% endif %}
-
-          {% if sd.top_reasons %}
-          <ul class="mt-3 space-y-1.5">
-            {% for r in sd.top_reasons[:4] %}
-            <li class="flex items-start gap-2 text-xs">
-              <span class="mt-1.5 h-1 w-1 shrink-0 rounded-full" style="background:var(--accent)"></span>
-              <div class="min-w-0">
-                <span class="font-medium text-slate-300">{{ r.reason }}</span>
-                {% if r.quote %}<span class="text-slate-500"> — “{{ r.quote|truncate(110, True) }}”</span>{% endif %}
+{# ====================================================================
+   THE TABLE
+   ==================================================================== #}
+{% if leads %}
+<div class="leads-table-wrap" data-reveal>
+  <table class="leads-table" id="leads-table">
+    <colgroup>
+      <col class="leads-col-check">
+      <col class="leads-col-co">
+      <col class="leads-col-dm">
+      <col class="leads-col-prod">
+      <col class="leads-col-persona">
+      <col class="leads-col-seg">
+      <col class="leads-col-fit">
+      <col class="leads-col-conf">
+      <col class="leads-col-status">
+      <col class="leads-col-when">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>
+          <label class="leads-check">
+            <input type="checkbox" data-bulk-select-all aria-label="Select all leads">
+            <span class="leads-check__box"></span>
+          </label>
+        </th>
+        <th class="leads-sortable" data-sort-key="company_asc">
+          <span>Company</span>
+          <span class="leads-sort__arrow"></span>
+        </th>
+        <th>Decision-maker</th>
+        <th>Product</th>
+        <th>Persona</th>
+        <th>Segment</th>
+        <th class="leads-sortable is-sorted is-desc" data-sort-key="fit_desc">
+          <span>Fit</span>
+          <span class="leads-sort__arrow">↓</span>
+        </th>
+        <th class="leads-sortable" data-sort-key="confidence_desc">
+          <span>Conf</span>
+          <span class="leads-sort__arrow"></span>
+        </th>
+        <th>Status</th>
+        <th class="leads-sortable" data-sort-key="created_desc">
+          <span>Created</span>
+          <span class="leads-sort__arrow"></span>
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lead in leads %}
+      {% set sd = lead.scraped_data or {} %}
+      {% set conf = lead.confidence_score if lead.confidence_score is not none else sd.confidence_score %}
+      {% set cp = lead.company_profile or {} %}
+      {% set primary_dm = (cp.decision_makers or [None])[0] if cp else None %}
+      {% set dm_name = primary_dm.name if primary_dm else '' %}
+      {% set dm_title = primary_dm.title if primary_dm else '' %}
+      {% set dm_email = primary_dm.email if primary_dm else '' %}
+      {% set intent_source = cp.source if cp else '' %}
+      {% set intent_url = cp.source_url if cp else '' %}
+      {% set post_title = cp.post_title if cp else '' %}
+      {% set post_snippet = cp.post_snippet if cp else '' %}
+      {% set reasoning_short = (lead.reasoning or '').strip() %}
+      <tr class="leads-row"
+          data-lead-id="{{ lead.id }}"
+          data-fit="{{ lead.fit_score if lead.fit_score is not none else '' }}"
+          data-conf="{{ conf if conf is not none else '' }}"
+          data-status="{{ lead.status }}"
+          data-haystack="{{ (lead.company_name ~ ' ' ~ (lead.website or '') ~ ' ' ~ (lead.contact_email or '') ~ ' ' ~ (lead.reasoning or '') ~ ' ' ~ (lead.target_product or '') ~ ' ' ~ dm_name ~ ' ' ~ dm_email ~ ' ' ~ dm_title)|lower }}">
+        <td class="leads-cell-check" data-stop-row-click>
+          <label class="leads-check">
+            <input type="checkbox" data-bulk-row value="{{ lead.id }}" aria-label="Select {{ lead.company_name }}">
+            <span class="leads-check__box"></span>
+          </label>
+        </td>
+        <td class="leads-cell-co" data-stop-row-click>
+          <div class="leads-co">
+            <div class="leads-co__avatar" aria-hidden="true">{{ (lead.company_name or '?')[:1]|upper }}</div>
+            <div class="min-w-0">
+              <a href="/leads/{{ lead.id }}" class="leads-co__name">{{ lead.company_name }}</a>
+              {% if lead.website %}
+              <a href="{{ lead.website }}" target="_blank" rel="noopener" class="leads-co__site">{{ lead.website|replace('https://', '')|replace('http://', '')|truncate(30, True) }}</a>
+              {% endif %}
+              {% if reasoning_short %}
+              <div class="leads-co__reason" title="{{ reasoning_short }}">{{ reasoning_short|truncate(140, True) }}</div>
+              {% endif %}
+              {# Inline intent signal — the proof the lead is real, on every row. #}
+              {% if post_title or intent_url %}
+              <div class="leads-co__intent">
+                <svg viewBox="0 0 24 24" class="h-3 w-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                {% if intent_url %}<a href="{{ intent_url }}" target="_blank" rel="noopener">{{ post_title or 'View source' }}</a>{% else %}<span>{{ post_title }}</span>{% endif %}
+                {% if intent_source %}<span class="leads-co__intent-src">via {{ intent_source }}{% if cp.source_name %} · {{ cp.source_name }}{% endif %}</span>{% endif %}
+                {% if post_snippet %}
+                <div class="leads-co__intent-pop" role="tooltip">
+                  <div class="leads-co__intent-pop-title">{{ post_title or 'Source' }}</div>
+                  <p>{{ post_snippet|truncate(280, True) }}</p>
+                  {% if intent_url %}<a href="{{ intent_url }}" target="_blank" rel="noopener">View source →</a>{% endif %}
+                </div>
+                {% endif %}
               </div>
-            </li>
-            {% endfor %}
-          </ul>
-          {% endif %}
-
-          <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] font-medium" style="color:var(--faint)">
-            {% if sd.pages_crawled %}<span>{{ sd.pages_crawled|length }} pages crawled</span>{% endif %}
-            {% if sd.evidence %}<span>{{ sd.evidence|length }} findings</span>{% endif %}
-            {% if sd.buying_signals %}<span class="chip chip--ok">{{ sd.buying_signals|length }} buying signal(s)</span>{% endif %}
-            {% if sd.extractor %}<span>{{ sd.extractor }}</span>{% endif %}
-            <a href="/leads/{{ lead.id }}" class="font-semibold text-sky-400 hover:text-sky-300">Open lead →</a>
+              {% endif %}
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
-  </article>
-  {% endfor %}
+        </td>
+        <td class="leads-cell-dm" data-stop-row-click>
+          {% if dm_name or dm_email or lead.contact_email %}
+          <div class="leads-dm">
+            <div class="leads-dm__avatar" aria-hidden="true">{{ (dm_name or lead.contact_email or '?')[:1]|upper }}</div>
+            <div class="min-w-0">
+              {% if dm_name %}
+              <div class="leads-dm__name">{{ dm_name }}</div>
+              {% if dm_title %}<div class="leads-dm__title">{{ dm_title }}</div>{% endif %}
+              {% else %}
+              <div class="leads-dm__name" style="color:var(--faint)">No decision-maker</div>
+              {% endif %}
+              {% if dm_email %}
+              <a class="leads-dm__email" href="mailto:{{ dm_email }}" title="{{ dm_email }}">{{ dm_email|truncate(28, True) }}</a>
+              {% elif lead.contact_email %}
+              <a class="leads-dm__email" href="mailto:{{ lead.contact_email }}" title="{{ lead.contact_email }}">{{ lead.contact_email|truncate(28, True) }}</a>
+              {% endif %}
+            </div>
+          </div>
+          {% else %}
+          <span class="leads-cell-empty">—</span>
+          {% endif %}
+        </td>
+        <td class="leads-cell-prod" data-stop-row-click>
+          {% if lead.target_product %}<span class="leads-prod">{{ lead.target_product }}</span>{% else %}<span class="leads-cell-empty">—</span>{% endif %}
+        </td>
+        <td class="leads-cell-persona" data-stop-row-click>
+          {% if lead.matches_persona is sameas true or (lead.company_profile and (lead.company_profile or {}).get('matches_persona') is sameas true) %}
+            <span class="chip chip--accent" title="Matches the buyer persona">BP</span>
+          {% elif lead.buyer_persona %}
+            <span class="chip" title="Outside the buyer persona (broader search)">broader</span>
+          {% else %}
+            <span class="leads-cell-empty">—</span>
+          {% endif %}
+        </td>
+        <td class="leads-cell-seg" data-stop-row-click>
+          {% if cp.segment or cp.employee_range or cp.industry %}
+          <div class="leads-seg">
+            {% if cp.segment %}<span class="chip {{ seg_classes.get(cp.segment, '') }}">{{ seg_labels.get(cp.segment, cp.segment) }}</span>{% endif %}
+            {% if cp.employee_range %}<span class="leads-seg__meta">{{ cp.employee_range }} emp.</span>{% endif %}
+            {% if cp.industry %}<span class="leads-seg__meta">{{ cp.industry }}</span>{% endif %}
+          </div>
+          {% else %}<span class="leads-cell-empty">—</span>{% endif %}
+        </td>
+        <td class="leads-cell-fit" data-stop-row-click>
+          {% if lead.fit_score is not none %}
+          <div class="leads-score leads-score--fit {{ lead.fit_score|fit_color }}">
+            <span class="leads-score__num">{{ lead.fit_score }}</span>
+            <div class="leads-score__bar"><i style="--p:{{ lead.fit_score }}%"></i></div>
+          </div>
+          {% else %}<span class="leads-cell-empty">—</span>{% endif %}
+        </td>
+        <td class="leads-cell-conf" data-stop-row-click>
+          {% if conf is not none %}
+          <div class="leads-score leads-score--conf">
+            <span class="leads-score__num">{{ conf }}<span class="leads-score__pct">%</span></span>
+            <div class="leads-score__bar"><i style="--p:{{ conf }}%"></i></div>
+          </div>
+          {% else %}<span class="leads-cell-empty">—</span>{% endif %}
+        </td>
+        <td class="leads-cell-status" data-stop-row-click>
+          <span class="status {{ lead.status|status_badge }}">{{ lead.status|status_label }}</span>
+        </td>
+        <td class="leads-cell-when" data-stop-row-click>
+          <span class="leads-when" title="{{ lead.created_at }}">{{ lead.created_at|fmt_dt }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
-
-<div class="mt-5 text-center">
-  <button type="button" class="btn btn--ghost" data-load-more hidden>Load more</button>
-</div>
-
 {% else %}
 <div class="empty mt-4" data-reveal>
-  <div class="text-sm font-medium text-slate-300">No leads here</div>
+  <div class="text-sm font-medium text-slate-300">No leads match these filters</div>
   <p class="mt-1 text-sm" style="color:var(--faint)">
-    {% if current_status or min_score or target_product %}
-    Try a different filter, or <a href="/leads" class="font-medium text-sky-400 hover:text-sky-300">clear filters</a>.
-    {% else %}
-    Run the pipeline from the dashboard to find your first prospects.
-    {% endif %}
+    Try widening the score threshold, clearing the search, or
+    <a href="/leads" class="font-medium text-sky-400 hover:text-sky-300">reset all filters</a>.
   </p>
 </div>
 {% endif %}
+
+{# ====================================================================
+   DRAWER — full lead detail slides in from the right.
+   The list behind it stays in the DOM so filters and selection survive.
+   ==================================================================== #}
+<div id="lead-drawer" class="drawer" hidden aria-hidden="true">
+  <div class="drawer__backdrop" data-drawer-close></div>
+  <aside class="drawer__panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1">
+    <header class="drawer__head">
+      <div class="min-w-0">
+        <div id="drawer-eyebrow" class="drawer__eyebrow"></div>
+        <h2 id="drawer-title" class="drawer__title">Loading…</h2>
+        <div id="drawer-meta" class="drawer__meta"></div>
+      </div>
+      <div class="drawer__head-actions">
+        <a id="drawer-open-full" class="btn btn--ghost" href="#">Open full page →</a>
+        <button type="button" class="drawer__close" data-drawer-close aria-label="Close drawer">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </header>
+    <nav class="drawer__tabs" role="tablist">
+      <button type="button" class="drawer__tab is-active" data-drawer-tab="overview" role="tab">Overview</button>
+      <button type="button" class="drawer__tab" data-drawer-tab="evidence" role="tab">Evidence</button>
+      <button type="button" class="drawer__tab" data-drawer-tab="reason" role="tab">Reason</button>
+    </nav>
+    <div class="drawer__body">
+      <section class="drawer__section is-active" data-drawer-pane="overview">
+        <div id="drawer-overview" class="drawer__pane"></div>
+      </section>
+      <section class="drawer__section" data-drawer-pane="evidence">
+        <div id="drawer-evidence" class="drawer__pane"></div>
+      </section>
+      <section class="drawer__section" data-drawer-pane="reason">
+        <div id="drawer-reason" class="drawer__pane"></div>
+      </section>
+    </div>
+    <footer class="drawer__foot">
+      <button type="button" class="btn btn--danger" data-drawer-action="rejected">Reject</button>
+      <button type="button" class="btn btn--success" data-drawer-action="approved">Approve</button>
+    </footer>
+  </aside>
+</div>
+
+{# ====================================================================
+   KEYBOARD CHEAT-SHEET
+   ==================================================================== #}
+<div id="kbdsheet" class="kbdsheet" hidden>
+  <div class="kbdsheet__backdrop" data-kbd-close></div>
+  <div class="kbdsheet__panel" role="dialog" aria-modal="true" aria-labelledby="kbd-title">
+    <div class="flex items-center justify-between">
+      <h3 id="kbd-title" class="text-sm font-bold text-slate-100">Keyboard shortcuts</h3>
+      <button type="button" class="drawer__close" data-kbd-close aria-label="Close">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <dl class="kbdsheet__list">
+      <div><dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Move row selection down / up</dd></div>
+      <div><dt><kbd>x</kbd></dt><dd>Toggle current row selection</dd></div>
+      <div><dt><kbd>a</kbd></dt><dd>Approve focused lead</dd></div>
+      <div><dt><kbd>r</kbd></dt><dd>Reject focused lead</dd></div>
+      <div><dt><kbd>o</kbd> or <kbd>Enter</kbd></dt><dd>Open drawer for focused lead</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close drawer</dd></div>
+      <div><dt><kbd>/</kbd></dt><dd>Focus search</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>Show this cheat sheet</dd></div>
+    </dl>
+  </div>
+</div>
 
 {% endblock %}

@@ -41,6 +41,11 @@ class StatusUpdate(BaseModel):
     status: str  # approved | rejected
 
 
+class BulkStatusUpdate(BaseModel):
+    status: str  # approved | rejected
+    ids: list[str] = []
+
+
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
@@ -613,12 +618,53 @@ def build_app() -> FastAPI:
         status: str | None = None,
         min_score: int | None = None,
         target_product: str | None = None,
+        sort: str = "fit_desc",
+        q: str | None = None,
+        min_confidence: int | None = None,
+        has_dm: str | None = None,
+        matches_persona: str | None = None,
     ):
+        # Coerce "on"/"true" → True, "off"/None → None.
+        def _truthy(v: str | None) -> bool | None:
+            if v is None:
+                return None
+            return str(v).lower() in ("1", "true", "on", "yes")
+
         leads = db.list_leads(
-            status=status, min_score=min_score, target_product=target_product, limit=200
+            status=status,
+            min_score=min_score,
+            target_product=target_product,
+            limit=200,
+            sort=sort,
+            min_confidence=min_confidence,
+            has_dm=_truthy(has_dm),
+            matches_persona=_truthy(matches_persona),
         )
+
+        # Search happens client-side too, but doing it server-side keeps the URL
+        # shareable and the page count accurate. A reviewer who shares a link
+        # with a colleague gets the same view.
+        if q:
+            needle = q.lower().strip()
+            def _hay(lead: dict[str, Any]) -> str:
+                cp = lead.get("company_profile") or {}
+                dm = (cp.get("decision_makers") or [{}])[0] if cp else {}
+                parts = [
+                    lead.get("company_name") or "",
+                    lead.get("website") or "",
+                    lead.get("contact_email") or "",
+                    lead.get("reasoning") or "",
+                    lead.get("target_product") or "",
+                    dm.get("name") or "",
+                    dm.get("email") or "",
+                    dm.get("title") or "",
+                ]
+                return " ".join(p for p in parts if p).lower()
+            leads = [l for l in leads if needle in _hay(l)]
+
         # Best-fit first: scored leads sorted by fit_score desc, unscored at the bottom.
-        leads.sort(key=lambda l: (l.get("fit_score") is None, l.get("fit_score") or 0), reverse=True)
+        # (Server already orders; this guarantees the tie-break when fit_score is null.)
+        leads.sort(key=lambda l: (l.get("fit_score") is None, -(l.get("fit_score") or 0)))
         counts = db.count_by_status()
         products = db.list_target_products()
         notice = request.query_params.get("notice", "")
@@ -633,7 +679,12 @@ def build_app() -> FastAPI:
                 "leads_by_product": products,
                 "current_status": status,
                 "min_score": min_score,
+                "min_confidence": min_confidence,
                 "target_product": target_product,
+                "sort": sort,
+                "q": q or "",
+                "has_dm": _truthy(has_dm),
+                "matches_persona": _truthy(matches_persona),
                 "notice": notice,
                 "active": "leads",
                 "job_banner": job_banner,
@@ -832,6 +883,41 @@ def build_app() -> FastAPI:
             raise HTTPException(400, "status must be 'approved' or 'rejected'")
         db.set_status(lead_id, body.status)
         return {"id": lead_id, "status": body.status}
+
+    @app.post("/api/leads/bulk-status")
+    def api_bulk_status(body: "BulkStatusUpdate"):
+        if body.status not in (db.APPROVED, db.REJECTED):
+            raise HTTPException(400, "status must be 'approved' or 'rejected'")
+        if not body.ids:
+            return {"updated": 0, "skipped": 0}
+        updated = 0
+        skipped = 0
+        for lead_id in body.ids:
+            lead = db.get_lead(lead_id)
+            if not lead:
+                skipped += 1
+                continue
+            if lead.get("status") == body.status:
+                skipped += 1
+                continue
+            db.set_status(lead_id, body.status)
+            updated += 1
+        return {"updated": updated, "skipped": skipped, "status": body.status}
+
+    @app.get("/api/leads/count")
+    def api_leads_count(
+        status: str | None = None,
+        min_score: int | None = None,
+        target_product: str | None = None,
+    ):
+        """Lightweight count endpoint so the new leads table can show
+        'Showing N of M' without re-rendering the page on every filter change."""
+        return {"count": len(db.list_leads(
+            status=status,
+            min_score=min_score,
+            target_product=target_product,
+            limit=1000,
+        ))}
 
     @app.get("/api/drafts")
     def api_drafts(limit: int = 50):

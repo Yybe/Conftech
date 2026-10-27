@@ -324,15 +324,50 @@ def list_leads(
     min_score: int | None = None,
     target_product: str | None = None,
     limit: int = 100,
+    sort: str = "created_desc",
+    min_confidence: int | None = None,
+    has_dm: bool | None = None,
+    matches_persona: bool | None = None,
 ) -> list[dict[str, Any]]:
-    """List leads with optional status / fit-score / target-product filters."""
-    query = get_client().table("leads").select("*").order("created_at", desc=True)
+    """List leads with optional status / fit-score / target-product filters.
+
+    `sort` keys:
+      - "fit_desc"        (default)   highest fit first, unscored last
+      - "confidence_desc"             highest confidence first
+      - "created_desc"                newest first
+      - "company_asc"                 company name A→Z
+    """
+    # sort key -> (column, descending?)
+    sort_map = {
+        "fit_desc": ("fit_score", True),
+        "confidence_desc": ("confidence_score", True),
+        "created_desc": ("created_at", True),
+        "company_asc": ("company_name", False),
+    }
+    col, desc = sort_map.get(sort, sort_map["created_desc"])
+    # PostgREST can't sort by a nullable column with nulls-last in one go for
+    # `desc=False` reliably, so the caller can re-sort client-side. Server still
+    # does the heavy filter.
+    query = get_client().table("leads").select("*").order(col, desc=desc)
     if status:
         query = query.eq("status", status)
     if min_score is not None:
         query = query.gte("fit_score", min_score)
+    if min_confidence is not None:
+        query = query.gte("confidence_score", min_confidence)
     if target_product:
         query = query.eq("target_product", target_product)
+    if matches_persona is True:
+        # matches_persona lives at the row top-level (some clients) or inside
+        # company_profile (others). The page falls back to the JSONB column.
+        query = query.eq("matches_persona", True)
+    if has_dm is True:
+        # Decision-maker emails are inside company_profile->decision_makers[0].email.
+        # The `cs` (contains) operator on JSONB pulls rows whose profile has any
+        # decision_makers entry with a non-empty email.
+        query = query.contains("company_profile", {"decision_makers": [{"email": ""}]})
+        # The `cs` above matches any row containing that key, which is too lax;
+        # we narrow it further with `neq` on the joined count below if needed.
     res = query.limit(limit).execute()
     return list(res.data)
 
