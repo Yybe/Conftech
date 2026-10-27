@@ -662,9 +662,12 @@ def build_app() -> FastAPI:
                 return " ".join(p for p in parts if p).lower()
             leads = [l for l in leads if needle in _hay(l)]
 
-        # Best-fit first: scored leads sorted by fit_score desc, unscored at the bottom.
-        # (Server already orders; this guarantees the tie-break when fit_score is null.)
-        leads.sort(key=lambda l: (l.get("fit_score") is None, -(l.get("fit_score") or 0)))
+        # Postgres orders NULLs first on a DESC sort, so re-sort the two nullable
+        # score columns to keep unscored leads at the bottom. Ordering by anything
+        # else must pass through untouched or the server-side sort is discarded.
+        nulls_last_col = {"fit_desc": "fit_score", "confidence_desc": "confidence_score"}.get(sort)
+        if nulls_last_col:
+            leads.sort(key=lambda l: (l.get(nulls_last_col) is None, -(l.get(nulls_last_col) or 0)))
         counts = db.count_by_status()
         products = db.list_target_products()
         notice = request.query_params.get("notice", "")
@@ -867,6 +870,20 @@ def build_app() -> FastAPI:
         _JOB_STATE["last_error_hint"] = None
         return {"acknowledged": True}
 
+    @app.get("/api/leads/count")
+    def api_leads_count(
+        status: str | None = None,
+        min_score: int | None = None,
+        target_product: str | None = None,
+    ):
+        """Count without re-rendering the page. Must stay above /api/leads/{lead_id}."""
+        return {"count": len(db.list_leads(
+            status=status,
+            min_score=min_score,
+            target_product=target_product,
+            limit=1000,
+        ))}
+
     @app.get("/api/leads/{lead_id}")
     def api_get_lead(lead_id: str):
         lead = db.get_lead(lead_id)
@@ -903,21 +920,6 @@ def build_app() -> FastAPI:
             db.set_status(lead_id, body.status)
             updated += 1
         return {"updated": updated, "skipped": skipped, "status": body.status}
-
-    @app.get("/api/leads/count")
-    def api_leads_count(
-        status: str | None = None,
-        min_score: int | None = None,
-        target_product: str | None = None,
-    ):
-        """Lightweight count endpoint so the new leads table can show
-        'Showing N of M' without re-rendering the page on every filter change."""
-        return {"count": len(db.list_leads(
-            status=status,
-            min_score=min_score,
-            target_product=target_product,
-            limit=1000,
-        ))}
 
     @app.get("/api/drafts")
     def api_drafts(limit: int = 50):

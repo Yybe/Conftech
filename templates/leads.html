@@ -246,26 +246,26 @@
             <span class="leads-check__box"></span>
           </label>
         </th>
-        <th class="leads-sortable" data-sort-key="company_asc">
+        <th class="leads-sortable{{ ' is-sorted' if sort == 'company_asc' else '' }}" data-sort-key="company_asc">
           <span>Company</span>
-          <span class="leads-sort__arrow"></span>
+          <span class="leads-sort__arrow">{{ '↑' if sort == 'company_asc' else '' }}</span>
         </th>
         <th>Decision-maker</th>
         <th>Product</th>
         <th>Persona</th>
         <th>Segment</th>
-        <th class="leads-sortable is-sorted is-desc" data-sort-key="fit_desc">
+        <th class="leads-sortable{{ ' is-sorted' if sort == 'fit_desc' else '' }}" data-sort-key="fit_desc">
           <span>Fit</span>
-          <span class="leads-sort__arrow">↓</span>
+          <span class="leads-sort__arrow">{{ '↓' if sort == 'fit_desc' else '' }}</span>
         </th>
-        <th class="leads-sortable" data-sort-key="confidence_desc">
+        <th class="leads-sortable{{ ' is-sorted' if sort == 'confidence_desc' else '' }}" data-sort-key="confidence_desc">
           <span>Conf</span>
-          <span class="leads-sort__arrow"></span>
+          <span class="leads-sort__arrow">{{ '↓' if sort == 'confidence_desc' else '' }}</span>
         </th>
         <th>Status</th>
-        <th class="leads-sortable" data-sort-key="created_desc">
+        <th class="leads-sortable{{ ' is-sorted' if sort == 'created_desc' else '' }}" data-sort-key="created_desc">
           <span>Created</span>
-          <span class="leads-sort__arrow"></span>
+          <span class="leads-sort__arrow">{{ '↓' if sort == 'created_desc' else '' }}</span>
         </th>
       </tr>
     </thead>
